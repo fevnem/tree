@@ -2,7 +2,7 @@
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, RECT};
-use windows::Win32::Graphics::Gdi::{HBRUSH, COLOR_WINDOW};
+use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, GetClientRect, MoveWindow, RegisterClassExW, HICON, HMENU, WINDOW_EX_STYLE,
@@ -16,10 +16,6 @@ pub fn instance() -> HINSTANCE {
     }
 }
 
-pub fn system_brush() -> HBRUSH {
-    // (COLOR_WINDOW + 1) is the documented way to ask for the system colour brush.
-    HBRUSH((COLOR_WINDOW.0 + 1) as usize as *mut core::ffi::c_void)
-}
 
 pub fn register_class(name: PCWSTR, icon: Option<HICON>, proc_: WNDPROC, brush: HBRUSH) -> bool {
     unsafe {

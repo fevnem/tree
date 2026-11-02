@@ -2,6 +2,7 @@
 //! `run_id`, so the toolbar, the menu, the tray and the context menu cannot
 //! drift apart.
 
+use crate::bindings;
 use crate::paths;
 use crate::single;
 use crate::ui::{add_dialog, context_menu, custom_draw, format, strings};
@@ -58,6 +59,8 @@ pub struct App {
     pub status_buf: [[u16; 512]; 3],
     pub ticks: u32,
     pub add_dlg: HWND,
+    /// Loopback bridge for the browser extension, drained on the UI timer.
+    pub bridge: Option<std::sync::mpsc::Receiver<Vec<String>>>,
 }
 
 fn scale(dpi: u32, v: i32) -> i32 {
@@ -103,6 +106,7 @@ impl App {
             status_buf: [[0; 512]; 3],
             ticks: 0,
             add_dlg: HWND::default(),
+            bridge: bindings::start(bindings::PORT),
         })
     }
 
@@ -546,12 +550,30 @@ impl App {
 
     pub fn on_timer(&mut self) {
         self.ticks = self.ticks.wrapping_add(1);
+        self.drain_bridge();
         self.refresh();
         if self.ticks.is_multiple_of(4) {
             self.poll_clipboard();
         }
         if self.ticks.is_multiple_of(8) {
             self.update_tray();
+        }
+    }
+
+    /// Links handed over by the browser extension.
+    fn drain_bridge(&mut self) {
+        let incoming: Vec<String> = match &self.bridge {
+            Some(rx) => {
+                let mut all = Vec::new();
+                while let Ok(mut batch) = rx.try_recv() {
+                    all.append(&mut batch);
+                }
+                all
+            }
+            None => return,
+        };
+        if !incoming.is_empty() {
+            self.add_many(&incoming);
         }
     }
 

@@ -30,7 +30,7 @@ pub fn about() -> String {
         "{name} {version}\n\nA native Windows download manager.\n\
          Parallel ranged connections, resumable, no runtime to install.\n\
          Video and audio links are handed to yt-dlp when it is available.\n\n\
-         Engine: Rust · tokio · SChannel\nUI: Win32\n",
+         Engine: Rust · tokio · SChannel\nUI: Win32\n\nBrowser extension bridge: 127.0.0.1:17817\n",
         name = APP_NAME,
         version = env!("CARGO_PKG_VERSION")
     )

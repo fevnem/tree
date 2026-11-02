@@ -3,6 +3,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod bindings;
 mod clipboard;
 mod paths;
 mod single;

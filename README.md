@@ -52,8 +52,10 @@ behaviour and accessibility for free instead of re-implementing them.
   Solarized, Sepia, Rosé, Forest. Dark palettes repaint the list, header,
   buttons, status bar and progress bar together, so nothing is left half-light.
 * **Zero friction to add a link** — paste, drop, `Ctrl+N`, `tree.exe <url>`,
-  clipboard watch, or hand it to the running window from a second launch. Only
-  one Tree ever runs: a second launch focuses the existing window.
+  clipboard watch, a second launch, or the
+  [browser extension](https://github.com/fevnem/tree-extension) (context menu,
+  popup, optional takeover of every browser download). Only one Tree ever runs:
+  a second launch focuses the existing window.
 
 ## Install
 
@@ -70,6 +72,10 @@ Windows 10/11, 64-bit. The build is unsigned, so SmartScreen will ask once:
 
 Portable mode: put an empty `tree.ini` next to `tree.exe` and all state stays in
 that folder instead of `%APPDATA%\Tree`.
+
+Browser integration: install the separate
+[Tree Downloader extension](https://github.com/fevnem/tree-extension) (Chrome,
+Edge, Brave, Firefox) — it sends links to the running app over loopback.
 
 ## Using it
 
@@ -105,6 +111,9 @@ crates/tree-win     shell: raw Win32 via the windows crate, no GUI framework
 * **Themes** — palettes are data; dark ones paint the controls Windows refuses to
   theme (header, rows, buttons, status bar) through custom-draw, light ones keep
   the stock controls.
+* **Browser bridge** — a loopback-only HTTP endpoint (`127.0.0.1:17817`) that the
+  extension posts to; it binds 127.0.0.1, answers `/add` and `/ping`, and nothing
+  else.
 * **yt-dlp** — spawned as a subprocess with `--newline` and a
   `--progress-template`, so its output becomes normal task progress; pause kills
   it, resume restarts with `--continue`.

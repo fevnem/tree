@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 — 2026-11-02
+
+* **New:** loopback browser bridge on `127.0.0.1:17817` (`/add?url=…`, `/ping`),
+  used by the Tree Downloader extension for Chrome/Edge/Brave and Firefox.
+  Binds to loopback only; if the port is taken the app still runs.
+
 ## 0.2.0 — 2026-11-02
 
 * **Fixed:** the Add dialog's buttons did nothing — its window procedure had no
