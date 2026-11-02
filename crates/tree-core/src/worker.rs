@@ -119,6 +119,28 @@ async fn fetch(
         // The server silently ignored our range: continuing would corrupt the file.
         return Err(DlError::RangeUnsupported);
     }
+    if code == 206 {
+        // A server may answer with a different range than the one requested;
+        // writing it at our offset would shift the whole file.
+        if let Some(cr) = resp.headers().get(reqwest::header::CONTENT_RANGE) {
+            match range_start(cr.to_str().unwrap_or("")) {
+                Some(from) if from == *off => {}
+                Some(_) | None => return Err(DlError::RangeUnsupported),
+            }
+        }
+    }
+    if code == 429 || code == 503 {
+        // Back off for as long as the server asks, within reason.
+        let wait = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(1)
+            .clamp(1, 10);
+        tokio::time::sleep(Duration::from_secs(wait)).await;
+        return Err(DlError::Http(code));
+    }
     if !(200..300).contains(&code) {
         return Err(DlError::Http(code));
     }
@@ -151,4 +173,23 @@ async fn fetch(
     }
     // Closed before the range was complete: the outer loop re-requests the rest.
     Err(DlError::Network("connection closed early".into()))
+}
+
+/// First byte of a `Content-Range: bytes 100-199/2000` header.
+fn range_start(header: &str) -> Option<u64> {
+    let rest = header.trim().strip_prefix("bytes")?.trim_start();
+    rest.split('-').next()?.trim().parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::range_start;
+
+    #[test]
+    fn reads_the_first_byte_of_a_range() {
+        assert_eq!(range_start("bytes 1024-2047/8192"), Some(1024));
+        assert_eq!(range_start("bytes 0-0/1"), Some(0));
+        assert_eq!(range_start("bytes */8192"), None);
+        assert_eq!(range_start("garbage"), None);
+    }
 }

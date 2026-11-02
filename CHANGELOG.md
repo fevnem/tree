@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1 — 2026-11-02
+
+* **Engine:** respect `Retry-After` on 429/503 instead of hammering a busy server.
+* **Engine:** verify the `Content-Range` start of every 206 response matches the
+  requested offset; a server answering with a different range now aborts the
+  segment instead of writing it at the wrong place.
+* Unit tests for the range header parser.
+
 ## 0.3.0 — 2026-11-02
 
 * **New:** loopback browser bridge on `127.0.0.1:17817` (`/add?url=…`, `/ping`),
