@@ -1,13 +1,13 @@
 # Tree
 
 **A native Windows download manager in Rust.** Eight parallel connections per
-file, resumable, and a 1.4 MB single executable that needs no runtime, no
-installer framework, and no web view.
+file, resumable, ten themes, video links through yt-dlp, and a single 1.6 MB
+executable that needs no runtime, no installer framework and no web view.
 
 ![Tree's main window](docs/screenshot.png)
 
 ```
-1.4 MB exe   ·   no VC++ redist   ·   no WebView2   ·   no telemetry   ·   MIT
+1.6 MB exe   ·   no VC++ redist   ·   no WebView2   ·   no telemetry   ·   MIT
 ```
 
 ## Why another download manager
@@ -23,7 +23,7 @@ behaviour and accessibility for free instead of re-implementing them.
 
 | | Tree | Electron-based manager | Browser |
 |---|---|---|---|
-| Install size | **1.4 MB** | 80–150 MB | — |
+| Install size | **1.6 MB** | 80–150 MB | — |
 | RAM at idle | **~25 MB** | 150–300 MB | 300 MB+ |
 | Threads at idle | **6** | 20+ | 30+ |
 | Connections per file | **8 ranged** | 1–4 | 1 |
@@ -44,8 +44,16 @@ behaviour and accessibility for free instead of re-implementing them.
 * **Native shell integration** — taskbar progress, tray icon with live
   percentage, drag-and-drop, dark title bar that follows the system theme,
   per-monitor DPI, real modal dialogs, system folder picker.
+* **Video and audio links** — anything yt-dlp understands (YouTube, Vimeo,
+  SoundCloud, Twitch, …) is handed to the official `yt-dlp.exe`, with the same
+  progress, pause and resume behaviour as a normal download. One click in
+  **Tools** fetches the binary; no Python needed.
+* **Ten themes** — Follow Windows, Light, Dark, Graphite, Midnight, Nord,
+  Solarized, Sepia, Rosé, Forest. Dark palettes repaint the list, header,
+  buttons, status bar and progress bar together, so nothing is left half-light.
 * **Zero friction to add a link** — paste, drop, `Ctrl+N`, `tree.exe <url>`,
-  clipboard watch, or hand it to the running window from a second launch.
+  clipboard watch, or hand it to the running window from a second launch. Only
+  one Tree ever runs: a second launch focuses the existing window.
 
 ## Install
 
@@ -72,6 +80,7 @@ that folder instead of `%APPDATA%\Tree`.
 | drag a link / drop a `.txt` of links | added |
 | copy a link anywhere | queued quietly (toggle under **View**) |
 | `tree.exe <url>` while running | handed to the running window |
+| a YouTube / Vimeo / SoundCloud link | downloaded through yt-dlp |
 | `Space` | pause / resume |
 | `Del` | remove from the list |
 | `Enter` | open the finished file |
@@ -93,6 +102,12 @@ crates/tree-win     shell: raw Win32 via the windows crate, no GUI framework
 * **Engine** — tokio (4 threads) + reqwest over `native-tls`, which is SChannel
   on Windows: no OpenSSL, no `ring`, no C toolchain surprises.
 * **State** — one 2 KB JSON file written atomically; no SQLite, no service.
+* **Themes** — palettes are data; dark ones paint the controls Windows refuses to
+  theme (header, rows, buttons, status bar) through custom-draw, light ones keep
+  the stock controls.
+* **yt-dlp** — spawned as a subprocess with `--newline` and a
+  `--progress-template`, so its output becomes normal task progress; pause kills
+  it, resume restarts with `--continue`.
 * **Build** — `cargo-xwin` cross-compiles from Linux, `llvm-rc` embeds the icon,
   version block and the comctl32-v6 / PerMonitorV2 manifest, NSIS builds the
   installer. Static CRT, so there is nothing to install alongside it.
@@ -109,17 +124,25 @@ Engine, on a real HTTPS server (`cargo test -p tree-core`, 11 tests):
 * pause at ~40 % then resume leaves every byte intact;
 * non-http input is rejected and in-flight duplicates are ignored.
 
-Shipped `tree.exe`, run under Wine 9 with a real X server:
+Shipped `tree.exe`, driven under Wine 9 with a real window manager — real clicks,
+not scripted calls:
 
-* window, menu, toolbar, ListView, progress bar and three-part status bar render
-  with correct enabled/disabled states and column alignment;
-* a 40 MiB file over 8 connections arrives complete and **byte-identical**
-  (SHA-256), with the part file renamed away;
-* URL handoff from a second launch, persistence across restart, name collision
-  handling (`file (2).ext`) and the failed-download error text all behave.
+* **Add → type URL → click the dialog's Add button** creates the task and starts
+  the transfer (the path that was broken in 0.1.0; the dialog had no
+  `WM_COMMAND` handler at all);
+* a 300 MiB file over 8 connections completes **byte-identical** (SHA-256), part
+  file renamed away;
+* a YouTube URL is detected as a yt-dlp task, its title becomes the row name, the
+  progress template is parsed, and the finished file lands in the download
+  folder — verified with a mock `yt-dlp.exe` implementing the documented flags;
+* a second launch does **not** open a second window: it hands its URL over and
+  exits;
+* dark and Nord palettes render the header, rows, buttons, status bar and
+  progress bar coherently, and column text stays aligned.
 
 Not verified visually (no Windows machine here): the tray balloon, taskbar
-progress and the immersive dark title bar. They are thin wrappers over stock
+progress, the immersive dark title bar and Windows' own dark mode for the menu
+bar. They are thin wrappers over stock
 shell calls with fallbacks, but they are the first thing to check on real
 hardware. HTTPS under Wine fails because a Wine prefix ships no trusted roots —
 that is an environment limit, not the code path.

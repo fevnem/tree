@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 /// Suffix used for the in-progress file. Renamed away on completion.
 pub const PART_SUFFIX: &str = ".tree-part";
-pub const STATE_VERSION: u32 = 1;
+pub const STATE_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,6 +34,15 @@ impl Status {
     }
 }
 
+/// How a task is fetched: our own ranged engine, or yt-dlp for media sites.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    #[default]
+    Direct,
+    YtDlp,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Segment {
     pub start: u64,
@@ -57,6 +66,8 @@ pub struct Task {
     pub done: u64,
     pub supports_ranges: bool,
     pub status: Status,
+    #[serde(default)]
+    pub kind: Kind,
     #[serde(default)]
     pub error: Option<String>,
     #[serde(default)]
@@ -115,11 +126,16 @@ pub struct Settings {
     pub speed_limit: u64,
     pub watch_clipboard: bool,
     pub minimize_to_tray: bool,
-    /// "system" | "light" | "dark"
+    /// One of `theme::THEMES`; "system" follows Windows.
     pub theme: String,
     pub sort_col: i32,
     pub sort_desc: bool,
     pub col_widths: Vec<i32>,
+    /// Window geometry in 96-dpi units; 0 means "let Windows decide".
+    pub win_w: i32,
+    pub win_h: i32,
+    pub win_x: i32,
+    pub win_y: i32,
 }
 
 impl Default for Settings {
@@ -130,11 +146,17 @@ impl Default for Settings {
             simultaneous: 3,
             speed_limit: 0,
             watch_clipboard: true,
-            minimize_to_tray: true,
+            // Closing a download manager should close it, not leave an invisible
+            // process behind a tray icon nobody asked for.
+            minimize_to_tray: false,
             theme: "system".into(),
             sort_col: 0,
-            sort_desc: true,
+            sort_desc: false,
             col_widths: vec![340, 90, 80, 110, 110, 80],
+            win_w: 0,
+            win_h: 0,
+            win_x: 0,
+            win_y: 0,
         }
     }
 }
@@ -152,7 +174,7 @@ impl Settings {
         self.speed_limit
     }
 
-    /// Keep persisted widths sane after a hand-edited state file.
+    /// Keep persisted values sane after a hand-edited state file.
     pub fn sane_columns(&mut self) {
         if self.col_widths.len() != 6 {
             self.col_widths = Settings::default().col_widths;
@@ -162,5 +184,7 @@ impl Settings {
         }
         self.conns = self.conns.clamp(1, 16);
         self.simultaneous = self.simultaneous.clamp(1, 5);
+        self.win_w = self.win_w.clamp(0, 4000);
+        self.win_h = self.win_h.clamp(0, 3000);
     }
 }

@@ -1,33 +1,32 @@
-//! Application state and the window procedure. All user actions funnel through
-//! `run_id`, so the toolbar, the menu, the tray and the context menu cannot drift
-//! apart.
+//! Application state and the window procedure. Every user action funnels through
+//! `run_id`, so the toolbar, the menu, the tray and the context menu cannot
+//! drift apart.
 
 use crate::paths;
 use crate::single;
-use crate::ui::{add_dialog, context_menu, format, strings};
+use crate::ui::{add_dialog, context_menu, custom_draw, format, strings};
 use crate::win32::{controls, listview, menu, theme, wide, window};
 use std::sync::atomic::Ordering;
-use std::time::Instant;
 use tree_core::{Engine, Settings, Status, Task};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::{
-    DeleteObject, FillRect, InvalidateRect, SetBkMode, SetTextColor, HDC, HGDIOBJ, HFONT,
-    TRANSPARENT,
+    DeleteObject, FillRect, InvalidateRect, SetBkMode, SetBkColor, SetTextColor, UpdateWindow, HDC,
+    HGDIOBJ, HFONT, TRANSPARENT,
 };
 use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Controls::{NMHDR, NM_DBLCLK, NM_RCLICK};
 use windows::Win32::UI::Shell::{
-    DragAcceptFiles, DragFinish, DragQueryFileW, ITaskbarList3, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
-    NIM_MODIFY, NOTIFYICONDATAW, ShellExecuteW, Shell_NotifyIconW, TaskbarList, TBPF_ERROR,
-    TBPF_NORMAL,
-    TBPF_NOPROGRESS, TBPF_PAUSED, HDROP,
+    DragAcceptFiles, DragFinish, DragQueryFileW, ITaskbarList3, NIF_ICON, NIF_MESSAGE, NIF_TIP,
+    NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, ShellExecuteW, Shell_NotifyIconW,
+    TaskbarList, TBPF_ERROR, TBPF_NORMAL, TBPF_NOPROGRESS, TBPF_PAUSED, HDROP,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::Win32::Graphics::Gdi::UpdateWindow;
 
 pub const WM_TRAY: u32 = WM_APP + 1;
+pub const WM_TOOLS_DONE: u32 = WM_APP + 2;
 pub const TIMER_UI: usize = 1;
 pub const TRAY_ID: u32 = 1;
 
@@ -48,14 +47,15 @@ pub struct App {
     pub rows: Vec<u64>,
     pub font: HFONT,
     pub icon: HICON,
-    pub dark: bool,
+    pub small_icon: HICON,
     pub palette: theme::Palette,
     pub dpi: u32,
     pub hmenu: Option<HMENU>,
     pub tray: bool,
+    pub taskbar_created: u32,
     pub taskbar: Option<ITaskbarList3>,
     pub last_clip: String,
-    pub started: Instant,
+    pub status_buf: [[u16; 512]; 3],
     pub ticks: u32,
     pub add_dlg: HWND,
 }
@@ -69,12 +69,7 @@ impl App {
         let engine = Engine::start(paths::state_path(), paths::downloads_dir());
         let mut settings = engine.settings();
         settings.sane_columns();
-        let dark = match settings.theme.as_str() {
-            "dark" => true,
-            "light" => false,
-            _ => theme::system_is_dark(),
-        };
-        let icon = load_icon();
+        let palette = theme::Palette::new(theme::palette_for(&settings.theme));
         let hmenu = menu::build(
             settings.conns,
             settings.speed_limit,
@@ -92,19 +87,20 @@ impl App {
                 filter: HWND::default(),
                 buttons: Vec::new(),
             },
+            font: theme::message_font(),
+            small_icon: load_icon(true),
+            icon: load_icon(false),
+            palette,
             settings,
             tasks: Vec::new(),
             rows: Vec::new(),
-            font: theme::message_font(),
-            icon,
-            dark,
-            palette: theme::Palette::for_dark(dark),
             dpi: 96,
             hmenu,
             tray: false,
+            taskbar_created: 0,
             taskbar: None,
             last_clip: String::new(),
-            started: Instant::now(),
+            status_buf: [[0; 512]; 3],
             ticks: 0,
             add_dlg: HWND::default(),
         })
@@ -134,16 +130,35 @@ impl App {
                 WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                 WS_EX_APPWINDOW,
                 None,
-                self.s(980),
-                self.s(620),
+                self.s(if self.settings.win_w > 0 { self.settings.win_w } else { 980 }),
+                self.s(if self.settings.win_h > 0 { self.settings.win_h } else { 620 }),
             )?;
             self.hwnd = hwnd;
             self.dpi = windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd).max(96);
+
+            // Restore the last window position when it is still on a monitor.
+            if self.settings.win_w > 0 && self.settings.win_h > 0 {
+                let mut rect = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut rect);
+                let w = rect.right - rect.left;
+                let h = rect.bottom - rect.top;
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    self.settings.win_x,
+                    self.settings.win_y,
+                    w,
+                    h,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+
             if let Some(hmenu) = self.hmenu {
                 let _ = SetMenu(hwnd, Some(hmenu));
             }
-            theme::frame(hwnd, self.dark);
+            theme::frame(hwnd, self.palette.colors.dark);
             DragAcceptFiles(hwnd, true);
+            self.taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
 
             self.create_children();
             self.layout();
@@ -163,16 +178,10 @@ impl App {
         let h = self.hwnd;
         let list = listview::create(h, controls::ID_LIST, 0, 0, 10, 10);
         for (i, title) in strings::COLUMNS.iter().enumerate() {
-            let width = self
-                .settings
-                .col_widths
-                .get(i)
-                .copied()
-                .unwrap_or_else(|| self.s(120));
+            let width = self.settings.col_widths.get(i).copied().unwrap_or(120);
             listview::add_column(list, i as i32, title, self.s(width));
         }
         let status = controls::statusbar(h, controls::ID_STATUS);
-        status_parts_init(status);
         let progress = controls::progress(h, controls::ID_PROGRESS, 0, 0, 10, 10);
         controls::progress_range(progress, 1000);
         let filter = controls::edit(h, controls::ID_FILTER, false, 0, 0, 10, 10);
@@ -196,7 +205,6 @@ impl App {
         for b in &buttons {
             controls::set_font(*b, font);
         }
-        theme::explorer_theme(list, self.dark);
 
         self.ui = Ui {
             list,
@@ -205,6 +213,83 @@ impl App {
             filter,
             buttons,
         };
+        self.apply_theme();
+    }
+
+    /// Push the current palette at every control we own. Dark palettes get our
+    /// own button painting; light ones keep the stock look.
+    pub fn apply_theme(&self) {
+        let colors = self.palette.colors;
+        theme::listview(self.ui.list, colors);
+        theme::control(self.ui.status, colors.dark);
+        theme::control(self.ui.filter, colors.dark);
+        if colors.dark {
+            // Themed progress bars ignore their colour messages.
+            theme::plain(self.ui.progress);
+        } else {
+            theme::control(self.ui.progress, false);
+        }
+        controls::progress_colors(
+            self.ui.progress,
+            if colors.dark { colors.bg } else { 0x00FF_FFFF },
+            colors.accent,
+        );
+        for button in &self.ui.buttons {
+            theme::control(*button, colors.dark);
+            controls::set_owner_draw(*button, colors.dark);
+        }
+        unsafe {
+            let _ = InvalidateRect(Some(self.ui.list), None, true);
+            let _ = InvalidateRect(Some(self.ui.status), None, true);
+        }
+    }
+
+    pub fn header_hwnd(&self) -> HWND {
+        let result = unsafe {
+            SendMessageW(
+                self.ui.list,
+                windows::Win32::UI::Controls::LVM_GETHEADER,
+                Some(WPARAM(0)),
+                Some(LPARAM(0)),
+            )
+        };
+        HWND(result.0 as *mut core::ffi::c_void)
+    }
+
+    /// One status-bar part. The text lives in a stable buffer so the owner-draw
+    /// pointer stays valid for the life of the window.
+    pub fn set_status(&mut self, part: usize, value: &str) {
+        if part >= 3 {
+            return;
+        }
+        wide::copy_into(&mut self.status_buf[part], value);
+        let flags = if self.palette.colors.dark {
+            part | 0x1000 // SBT_OWNERDRAW
+        } else {
+            part
+        };
+        let ptr = self.status_buf[part].as_ptr();
+        controls::status_text_raw(self.ui.status, part, flags, ptr);
+    }
+
+    /// WM_DRAWITEM for our buttons and the owner-drawn status bar.
+    pub fn on_draw_item(&self, lp: LPARAM) {
+        unsafe {
+            let dis = &*(lp.0 as *const windows::Win32::UI::Controls::DRAWITEMSTRUCT);
+            if dis.CtlID == controls::ID_STATUS as u32 {
+                if !self.palette.colors.dark {
+                    return;
+                }
+                let value = if dis.itemData != 0 {
+                    read_wide(dis.itemData as *const u16)
+                } else {
+                    String::new()
+                };
+                custom_draw::status_part(self, &value, dis.hDC, &dis.rcItem);
+            } else if self.palette.colors.dark {
+                custom_draw::button(self, dis.hwndItem, dis.hDC, &dis.rcItem, dis.itemState.0);
+            }
+        }
     }
 
     // ---- commands -------------------------------------------------------
@@ -254,6 +339,7 @@ impl App {
                     crate::clipboard::write_text(&task.url);
                 }
             }
+            menu::ID_SHOW => self.show_window(),
             menu::ID_EXIT => unsafe {
                 let _ = DestroyWindow(self.hwnd);
             },
@@ -273,26 +359,54 @@ impl App {
                 self.settings.minimize_to_tray = !self.settings.minimize_to_tray;
                 self.save_settings();
             }
+            menu::ID_YTDLP => self.install_ytdlp(),
             _ => {
+                let themes = menu::ID_THEME_BASE..menu::ID_THEME_BASE + theme::THEMES.len();
                 if id > menu::ID_CONNS_BASE && id <= menu::ID_CONNS_BASE + 16 {
                     self.settings.conns = id - menu::ID_CONNS_BASE;
                 } else if id > menu::ID_SPEED_BASE && id <= menu::ID_SPEED_BASE + 64 {
                     self.settings.speed_limit = ((id - menu::ID_SPEED_BASE) as u64) << 20;
-                } else if (menu::ID_THEME_BASE..=menu::ID_THEME_BASE + 2).contains(&id) {
-                    self.settings.theme = ["system", "light", "dark"][id - menu::ID_THEME_BASE].into();
+                } else if themes.contains(&id) {
+                    self.settings.theme = theme::THEMES[id - menu::ID_THEME_BASE].0.to_string();
                     self.retheme();
                 }
                 self.save_settings();
+                self.layout();
             }
         }
         self.refresh();
     }
 
+    /// Add links and put the selection on the newest one, so the user sees what
+    /// just happened.
+    pub fn add_many(&mut self, urls: &[String]) {
+        let before = self
+            .engine
+            .snapshot()
+            .iter()
+            .map(|t| t.id)
+            .max()
+            .unwrap_or(0);
+        self.engine.add_many(urls);
+        self.refresh();
+        if let Some(row) = self.rows.iter().position(|id| *id > before) {
+            unsafe {
+                let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(self.ui.list));
+            }
+            listview::focus_row(self.ui.list, row as i32);
+            self.refresh();
+        }
+    }
+
     fn selected(&self) -> Vec<u64> {
-        listview::selected_rows(self.ui.list)
-            .into_iter()
-            .filter_map(|row| self.rows.get(row as usize).copied())
-            .collect()
+        self.selected_ids()
+    }
+
+    fn show_window(&mut self) {
+        unsafe {
+            let _ = ShowWindow(self.hwnd, SW_RESTORE);
+            let _ = SetForegroundWindow(self.hwnd);
+        }
     }
 
     fn open_selected(&mut self) {
@@ -333,13 +447,14 @@ impl App {
     }
 
     pub fn save_settings(&mut self) {
-        // Column widths as the user left them.
-        let mut widths = Vec::new();
-        for i in 0..6 {
-            widths.push(self.column_width(i));
-        }
-        self.settings.col_widths = widths;
-        self.engine.set_settings(self.settings.clone());
+        // Widths are stored in 96-dpi units: scaling them on save as well would
+        // make the columns grow on every launch at 125 %/150 %.
+        let dpi = self.dpi.max(96);
+        let logical: Vec<i32> = (0..6)
+            .map(|i| (self.column_width(i) * 96 / dpi as i32).max(48))
+            .collect();
+        self.settings.col_widths = logical;
+
         if let Some(old) = self.hmenu.take() {
             menu::destroy(old);
         }
@@ -356,6 +471,7 @@ impl App {
                 let _ = DrawMenuBar(self.hwnd);
             }
         }
+        self.engine.set_settings(self.settings.clone());
     }
 
     fn column_width(&self, i: i32) -> i32 {
@@ -372,11 +488,13 @@ impl App {
 
     // ---- notifications --------------------------------------------------
 
-    pub fn on_notify(&mut self, lp: LPARAM) {
+    pub fn on_notify(&mut self, lp: LPARAM) -> Option<isize> {
+        if let Some(result) = custom_draw::on_notify(self, lp) {
+            return Some(result);
+        }
         unsafe {
             let hdr = &*(lp.0 as *const NMHDR);
-            let code = hdr.code;
-            if code == windows::Win32::UI::Controls::LVN_COLUMNCLICK {
+            if hdr.code == windows::Win32::UI::Controls::LVN_COLUMNCLICK {
                 let info = &*(lp.0 as *const windows::Win32::UI::Controls::NMLISTVIEW);
                 let col = info.iSubItem;
                 if self.settings.sort_col == col {
@@ -387,12 +505,13 @@ impl App {
                 }
                 self.save_settings();
                 self.refresh();
-            } else if code == NM_DBLCLK {
+            } else if hdr.code == NM_DBLCLK {
                 self.open_selected();
-            } else if code == NM_RCLICK {
+            } else if hdr.code == NM_RCLICK {
                 context_menu::show(self);
             }
         }
+        None
     }
 
     pub fn on_drop(&mut self, wp: WPARAM) {
@@ -421,8 +540,7 @@ impl App {
             DragFinish(hdrop);
         }
         if !urls.is_empty() {
-            self.engine.add_many(&urls);
-            self.refresh();
+            self.add_many(&urls);
         }
     }
 
@@ -452,57 +570,65 @@ impl App {
             let known = self.tasks.iter().any(|t| t.url == url);
             if !known {
                 self.engine.add(&url);
-                self.refresh();
             }
         }
     }
 
     pub fn on_tray(&mut self, lp: LPARAM) {
         let event = (lp.0 as u32) & 0xFFFF;
-        if event == WM_LBUTTONUP || event == WM_LBUTTONDBLCLK {
-            unsafe {
-                let _ = ShowWindow(self.hwnd, SW_RESTORE);
-                let _ = SetForegroundWindow(self.hwnd);
+        match event {
+            WM_LBUTTONUP => {
+                // Click toggles: restore when hidden, hide when already in front.
+                let visible = unsafe { IsWindowVisible(self.hwnd).as_bool() };
+                if visible && unsafe { GetForegroundWindow() } == self.hwnd {
+                    unsafe {
+                        let _ = ShowWindow(self.hwnd, SW_HIDE);
+                    }
+                } else {
+                    self.show_window();
+                }
             }
-        } else if event == WM_RBUTTONUP {
-            if let Some(menu) = menu::tray_menu() {
+            WM_LBUTTONDBLCLK => self.show_window(),
+            WM_RBUTTONUP => {
+                let has_tasks = !self.tasks.is_empty();
+                let Some(popup) = menu::tray_menu(has_tasks) else {
+                    return;
+                };
                 let mut pt = POINT::default();
                 unsafe {
                     let _ = GetCursorPos(&mut pt);
+                    // Required by the shell so the menu closes when it loses focus.
                     let _ = SetForegroundWindow(self.hwnd);
                     let cmd = TrackPopupMenuEx(
-                        menu,
+                        popup,
                         (TPM_RETURNCMD | TPM_RIGHTBUTTON).0,
                         pt.x,
                         pt.y,
                         self.hwnd,
                         None,
                     );
-                    let _ = DestroyMenu(menu);
-                    match cmd.0 as usize {
-                        menu::ID_ADD => {
-                            let _ = ShowWindow(self.hwnd, SW_RESTORE);
-                            let _ = SetForegroundWindow(self.hwnd);
-                        }
-                        menu::ID_EXIT => {
-                            let _ = DestroyWindow(self.hwnd);
-                        }
-                        other => self.run_id(other),
+                    let _ = DestroyMenu(popup);
+                    let _ = PostMessageW(Some(self.hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+                    let id = cmd.0 as usize;
+                    if id != 0 {
+                        self.run_id(id);
                     }
                 }
             }
+            _ => {}
         }
     }
 
     pub fn on_erase(&self, wp: WPARAM) -> LRESULT {
         let hdc = HDC(wp.0 as *mut core::ffi::c_void);
-        let mut rect = window::client_rect(self.hwnd);
+        let rect = window::client_rect(self.hwnd);
         unsafe {
             FillRect(hdc, &rect, self.palette.background);
         }
         LRESULT(1)
     }
 
+    /// Static labels and buttons: transparent background, palette text.
     pub fn on_ctlcolor(&self, wp: WPARAM) -> LRESULT {
         let hdc = HDC(wp.0 as *mut core::ffi::c_void);
         unsafe {
@@ -512,19 +638,26 @@ impl App {
         LRESULT(self.palette.background.0 as isize)
     }
 
+    /// Text fields need an opaque background, otherwise the block cursor smears.
+    pub fn on_ctlcolor_edit(&self, wp: WPARAM) -> LRESULT {
+        let hdc = HDC(wp.0 as *mut core::ffi::c_void);
+        unsafe {
+            SetBkColor(hdc, COLORREF(self.palette.colors.surface));
+            SetTextColor(hdc, self.palette.text);
+        }
+        LRESULT(self.palette.surface.0 as isize)
+    }
+
     pub fn retheme(&mut self) {
-        self.dark = match self.settings.theme.as_str() {
-            "dark" => true,
-            "light" => false,
-            _ => theme::system_is_dark(),
-        };
+        let colors = theme::palette_for(&self.settings.theme);
         self.palette.dispose();
-        self.palette = theme::Palette::for_dark(self.dark);
-        theme::frame(self.hwnd, self.dark);
-        theme::explorer_theme(self.ui.list, self.dark);
+        self.palette = theme::Palette::new(colors);
+        theme::frame(self.hwnd, colors.dark);
+        self.apply_theme();
         unsafe {
             let _ = InvalidateRect(Some(self.hwnd), None, true);
         }
+        self.layout();
     }
 
     // ---- shell integration ---------------------------------------------
@@ -536,10 +669,10 @@ impl App {
             uID: TRAY_ID,
             uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
             uCallbackMessage: WM_TRAY,
-            hIcon: self.icon,
+            hIcon: self.small_icon,
             ..Default::default()
         };
-        wide::copy_into(&mut data.szTip, "Tree — starting");
+        wide::copy_into(&mut data.szTip, &strings::tray_tooltip(None, 0));
         unsafe { Shell_NotifyIconW(NIM_ADD, &data).as_bool() }
     }
 
@@ -548,16 +681,10 @@ impl App {
             return;
         }
         let (done, total, running) = self.totals();
-        let label = if running == 0 {
-            "Tree — idle".to_string()
-        } else if total > 0 {
-            format!(
-                "Tree — {:.0}% of {} active",
-                done as f64 * 100.0 / total as f64,
-                running
-            )
+        let percent = if total > 0 {
+            Some((done as f64 * 100.0 / total as f64).round() as u32)
         } else {
-            format!("Tree — {} active", running)
+            None
         };
         let mut data = NOTIFYICONDATAW {
             cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
@@ -566,7 +693,7 @@ impl App {
             uFlags: NIF_TIP,
             ..Default::default()
         };
-        wide::copy_into(&mut data.szTip, &label);
+        wide::copy_into(&mut data.szTip, &strings::tray_tooltip(percent, running));
         unsafe {
             let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
         }
@@ -634,7 +761,55 @@ impl App {
         format::gib_free(free)
     }
 
+    /// Tools ▸ yt-dlp: fetch the official binary into our data folder and
+    /// re-scan. Runs on a thread so the UI never freezes on a 30 MB download.
+    fn install_ytdlp(&mut self) {
+        if let Some(exe) = self.engine.ytdlp_path() {
+            let msg = format!("yt-dlp is already available:\n{}", exe.display());
+            unsafe {
+                MessageBoxW(
+                    Some(self.hwnd),
+                    wide::pcw(&wide::wide(&msg)),
+                    w!("yt-dlp"),
+                    MB_OK | MB_ICONINFORMATION,
+                );
+            }
+            return;
+        }
+        let target = paths::data_dir().join("bin").join(tree_core::ytdlp::BINARY);
+        // HWND is a pointer: carry it across the thread as an integer.
+        let hwnd_raw = self.hwnd.0 as isize;
+        unsafe {
+            let _ = EnableWindow(self.hwnd, false);
+        }
+        std::thread::spawn(move || {
+            let ok = tree_core::ytdlp::install(&target).is_ok();
+            unsafe {
+                let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
+                let _ = PostMessageW(
+                    Some(hwnd),
+                    WM_TOOLS_DONE,
+                    WPARAM(ok as usize),
+                    LPARAM(0),
+                );
+            }
+        });
+    }
+
     pub fn shutdown(&mut self) {
+        // Remember where the window was.
+        let mut rect = RECT::default();
+        unsafe {
+            let _ = GetWindowRect(self.hwnd, &mut rect);
+        }
+        if rect.right > rect.left && rect.bottom > rect.top {
+            self.settings.win_w = (rect.right - rect.left) * 96 / self.dpi.max(96) as i32;
+            self.settings.win_h = (rect.bottom - rect.top) * 96 / self.dpi.max(96) as i32;
+            self.settings.win_x = rect.left;
+            self.settings.win_y = rect.top;
+        }
+        self.save_settings();
+
         if self.tray {
             let data = NOTIFYICONDATAW {
                 cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
@@ -647,7 +822,6 @@ impl App {
             }
             self.tray = false;
         }
-        self.save_settings();
         self.engine.shutdown();
         if !self.font.0.is_null() {
             unsafe {
@@ -658,31 +832,29 @@ impl App {
     }
 }
 
-fn load_icon() -> HICON {
+fn load_icon(small: bool) -> HICON {
     unsafe {
+        let (cx, cy) = if small {
+            (
+                GetSystemMetrics(SM_CXSMICON),
+                GetSystemMetrics(SM_CYSMICON),
+            )
+        } else {
+            (GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON))
+        };
         LoadImageW(
             Some(window::instance()),
             PCWSTR(std::ptr::dangling::<u16>()),
             IMAGE_ICON,
-            0,
-            0,
-            LR_DEFAULTSIZE | LR_SHARED,
+            cx,
+            cy,
+            LR_DEFAULTCOLOR,
         )
         .ok()
         .map(|handle| HICON(handle.0))
         .or_else(|| LoadIconW(None, IDI_APPLICATION).ok())
         .unwrap_or_default()
     }
-}
-
-fn status_parts_init(sb: HWND) {
-    let mut rect = RECT::default();
-    unsafe {
-        let _ = GetClientRect(sb, &mut rect);
-    }
-    let w = rect.right.max(300);
-    let parts = [w * 50 / 100, w * 78 / 100, -1];
-    controls::status_parts(sb, &parts);
 }
 
 fn cue_banner(edit: HWND, text: &str) {
@@ -697,17 +869,19 @@ fn cue_banner(edit: HWND, text: &str) {
     }
 }
 
-pub unsafe extern "system" fn wndproc(
-    hwnd: HWND,
-    msg: u32,
-    wp: WPARAM,
-    lp: LPARAM,
-) -> LRESULT {
+pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let ptr = crate::APP.load(Ordering::Relaxed);
     if ptr.is_null() {
         return unsafe { DefWindowProcW(hwnd, msg, wp, lp) };
     }
     let app = unsafe { &mut *ptr };
+
+    if msg == app.taskbar_created && msg != 0 {
+        // Explorer restarted: the tray icon has to be registered again.
+        app.tray = app.tray_add();
+        app.update_tray();
+        return LRESULT(0);
+    }
 
     match msg {
         WM_CREATE => LRESULT(0),
@@ -723,6 +897,7 @@ pub unsafe extern "system" fn wndproc(
         }
         WM_ERASEBKGND => app.on_erase(wp),
         WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => app.on_ctlcolor(wp),
+        WM_CTLCOLOREDIT => app.on_ctlcolor_edit(wp),
         WM_TIMER => {
             if wp.0 == TIMER_UI {
                 app.on_timer();
@@ -730,24 +905,19 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_COMMAND => {
-            let id = (wp.0 & 0xFFFF);
+            let id = wp.0 & 0xFFFF;
             let code = ((wp.0 >> 16) & 0xFFFF) as u32;
             if id == controls::ID_FILTER as usize && code == EN_CHANGE {
                 app.refresh();
-            } else if id == controls::ID_BROWSE as usize {
-                add_dialog::browse(app);
             } else if code == 0 || code == 1 {
-                match id {
-                    x if x == controls::ID_OK as usize => add_dialog::commit(app),
-                    x if x == controls::ID_CANCEL as usize => add_dialog::close(app),
-                    _ => app.run_id(id),
-                }
+                app.run_id(id);
             }
             LRESULT(0)
         }
-        WM_NOTIFY => {
-            app.on_notify(lp);
-            LRESULT(0)
+        WM_NOTIFY => LRESULT(app.on_notify(lp).unwrap_or(0)),
+        WM_DRAWITEM => {
+            app.on_draw_item(lp);
+            LRESULT(1)
         }
         WM_DROPFILES => {
             app.on_drop(wp);
@@ -756,8 +926,7 @@ pub unsafe extern "system" fn wndproc(
         WM_COPYDATA => {
             let urls = unsafe { single::read_copy_data(lp) };
             if !urls.is_empty() {
-                app.engine.add_many(&urls);
-                app.refresh();
+                app.add_many(&urls);
                 unsafe {
                     let _ = ShowWindow(hwnd, SW_RESTORE);
                     let _ = SetForegroundWindow(hwnd);
@@ -766,7 +935,9 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(1)
         }
         WM_SETTINGCHANGE => {
-            app.retheme();
+            if app.settings.theme == "system" {
+                app.retheme();
+            }
             LRESULT(0)
         }
         WM_DPICHANGED => {
@@ -790,7 +961,34 @@ pub unsafe extern "system" fn wndproc(
             app.on_tray(lp);
             LRESULT(0)
         }
+        WM_TOOLS_DONE => {
+            unsafe {
+                let _ = EnableWindow(hwnd, true);
+            }
+            app.engine.refresh_tools();
+            let (text, icon) = if wp.0 != 0 {
+                (
+                    "yt-dlp is installed. Video and audio links now download through it.",
+                    MB_ICONINFORMATION,
+                )
+            } else {
+                (
+                    "yt-dlp could not be downloaded. Check the connection and try again from Tools.",
+                    MB_ICONWARNING,
+                )
+            };
+            unsafe {
+                MessageBoxW(
+                    Some(hwnd),
+                    wide::pcw(&wide::wide(text)),
+                    w!("yt-dlp"),
+                    MB_OK | icon,
+                );
+            }
+            LRESULT(0)
+        }
         WM_CLOSE => {
+            // Closing hides only when there is a tray icon to come back from.
             if app.settings.minimize_to_tray && app.tray {
                 unsafe {
                     let _ = ShowWindow(hwnd, SW_HIDE);
@@ -813,4 +1011,24 @@ pub unsafe extern "system" fn wndproc(
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
+}
+
+
+/// Read a NUL-terminated wide string that lives in one of our own buffers.
+fn read_wide(mut ptr: *const u16) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
+    let mut out = Vec::new();
+    unsafe {
+        for _ in 0..512 {
+            let ch = *ptr;
+            if ch == 0 {
+                break;
+            }
+            out.push(ch);
+            ptr = ptr.add(1);
+        }
+    }
+    String::from_utf16_lossy(&out)
 }

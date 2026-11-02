@@ -5,15 +5,16 @@
 
 use crate::{
     error::DlError, io, plan, probe,
-    model::{Segment, Settings, Status, Task, PART_SUFFIX},
+    model::{Kind, Segment, Settings, Status, Task, PART_SUFFIX},
     speed::Speedometer,
     store,
     worker::{self, Bucket},
 };
+use crate::ytdlp;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -27,6 +28,7 @@ const TICK: Duration = Duration::from_millis(250);
 
 pub enum Cmd {
     Add(Vec<String>),
+    RefreshTools,
     Pause(u64),
     Resume(u64),
     Remove(u64, bool),
@@ -69,6 +71,7 @@ pub struct TaskRun {
     pub url: String,
     pub dir: PathBuf,
     pub client: Client,
+    pub kind: Kind,
     pub stop: AtomicU8,
     pub bucket: Arc<Bucket>,
     pub inner: Mutex<Run>,
@@ -81,6 +84,7 @@ impl TaskRun {
             url: t.url.clone(),
             dir: PathBuf::from(&t.dir),
             client,
+            kind: t.kind,
             stop: AtomicU8::new(RUN),
             bucket,
             inner: Mutex::new(Run {
@@ -132,6 +136,7 @@ pub struct Engine {
     tasks: Arc<Mutex<Vec<Task>>>,
     settings: Arc<Mutex<Settings>>,
     tx: UnboundedSender<Cmd>,
+    ytdlp: Arc<Mutex<Option<PathBuf>>>,
     default_dir: PathBuf,
     join: Option<JoinHandle<()>>,
 }
@@ -154,6 +159,8 @@ impl Engine {
         let settings = Arc::new(Mutex::new(settings));
         let (tx, rx) = unbounded_channel();
 
+        let tools = Arc::new(Mutex::new(resolve_ytdlp(&state_path)));
+
         let runner = Runner {
             state: state_path,
             tasks: tasks.clone(),
@@ -161,6 +168,7 @@ impl Engine {
             active: HashMap::new(),
             speeds: HashMap::new(),
             client: crate::http_client(),
+            ytdlp: tools.clone(),
             default_dir: default_dir.clone(),
             dirty: true,
         };
@@ -182,6 +190,7 @@ impl Engine {
             tasks,
             settings,
             tx,
+            ytdlp: tools,
             default_dir,
             join: Some(join),
         }
@@ -213,6 +222,15 @@ impl Engine {
 
     pub fn resume_all(&self) {
         let _ = self.tx.send(Cmd::ResumeAll);
+    }
+
+    pub fn ytdlp_path(&self) -> Option<PathBuf> {
+        lock(&self.ytdlp).clone()
+    }
+
+    /// Re-scan for yt-dlp after the user installs it from the Tools menu.
+    pub fn refresh_tools(&self) {
+        let _ = self.tx.send(Cmd::RefreshTools);
     }
 
     pub fn set_settings(&self, s: Settings) {
@@ -256,6 +274,7 @@ struct Runner {
     active: HashMap<u64, Arc<TaskRun>>,
     speeds: HashMap<u64, Speedometer>,
     client: Client,
+    ytdlp: Arc<Mutex<Option<PathBuf>>>,
     default_dir: PathBuf,
     dirty: bool,
 }
@@ -400,6 +419,10 @@ impl Runner {
                 self.dirty = true;
                 self.start_queued(tx);
             }
+            Cmd::RefreshTools => {
+                *lock(&self.ytdlp) = resolve_ytdlp(&self.state);
+                self.start_queued(tx);
+            }
             Cmd::Quit => {}
         }
     }
@@ -411,6 +434,7 @@ impl Runner {
         } else {
             settings.dir.clone()
         };
+        let have_tool = lock(&self.ytdlp).is_some();
         let mut v = lock(&self.tasks);
         let mut next = v.iter().map(|t| t.id).max().unwrap_or(0) + 1;
         for raw in urls {
@@ -434,6 +458,11 @@ impl Runner {
                 done: 0,
                 supports_ranges: false,
                 status: Status::Queued,
+                kind: if have_tool && ytdlp::is_media_url(url) {
+                    Kind::YtDlp
+                } else {
+                    Kind::Direct
+                },
                 error: None,
                 created: now(),
                 segments: Vec::new(),
@@ -474,8 +503,9 @@ impl Runner {
             let tasks = self.tasks.clone();
             let tx = tx.clone();
             let st = settings.clone();
+            let tools = lock(&self.ytdlp).clone();
             tokio::spawn(async move {
-                let outcome = run_task(&run, &st, &tasks).await;
+                let outcome = run_task(&run, &st, &tasks, tools).await;
                 let _ = tx.send(Cmd::Finished {
                     id: run.id,
                     outcome,
@@ -533,7 +563,19 @@ impl Runner {
     }
 }
 
-async fn run_task(run: &Arc<TaskRun>, settings: &Settings, tasks: &Arc<Mutex<Vec<Task>>>) -> Outcome {
+async fn run_task(
+    run: &Arc<TaskRun>,
+    settings: &Settings,
+    tasks: &Arc<Mutex<Vec<Task>>>,
+    tool: Option<PathBuf>,
+) -> Outcome {
+    // Media sites need yt-dlp's extractors; when the binary is missing we fall
+    // back to a plain ranged download of whatever the URL returns.
+    if run.kind == Kind::YtDlp {
+        if let Some(exe) = tool {
+            return run_ytdlp(run, tasks, exe).await;
+        }
+    }
     let needs_probe = lock(&run.inner).bounds.is_empty();
 
     if needs_probe {
@@ -656,6 +698,7 @@ mod tests {
             done: 40,
             supports_ranges: true,
             status: Status::Queued,
+            kind: Kind::Direct,
             error: None,
             created: 0,
             segments: vec![
@@ -682,5 +725,113 @@ mod tests {
         assert_eq!(run.done(), 40);
         assert_eq!(run.bounds(1), (50, 99));
         assert!(run.part().to_string_lossy().ends_with("a.bin.tree-part"));
+    }
+}
+
+
+/// Where yt-dlp lives: beside the exe (portable), in our data folder, or on PATH.
+fn resolve_ytdlp(state_path: &Path) -> Option<PathBuf> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let data_dir = state_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    ytdlp::find(&exe_dir, &data_dir)
+}
+
+/// yt-dlp is a subprocess: a watcher thread copies its counters into the shared
+/// run state so the table, tray and taskbar keep updating; pause kills it, and
+/// `--continue` makes the restart a resume.
+async fn run_ytdlp(run: &Arc<TaskRun>, tasks: &Arc<Mutex<Vec<Task>>>, exe: PathBuf) -> Outcome {
+    let url = run.url.clone();
+    let dir = run.dir.clone();
+
+    {
+        // yt-dlp knows the real title, which is far more useful than the URL slug
+        // the task was created with.
+        let current = lock(&run.inner).name.clone();
+        let guessed = tokio::task::spawn_blocking({
+            let exe = exe.clone();
+            let url = url.clone();
+            move || ytdlp::query_name(&exe, &url)
+        })
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(current);
+        let mut g = lock(&run.inner);
+        g.name = guessed;
+        g.bounds = vec![(0, u64::MAX)];
+        g.seg_done = vec![0];
+    }
+
+    let ctl = Arc::new(ytdlp::Ctl::default());
+    let finished = Arc::new(AtomicBool::new(false));
+    let watcher = {
+        let run = run.clone();
+        let ctl = ctl.clone();
+        let finished = finished.clone();
+        std::thread::spawn(move || {
+            while !finished.load(Ordering::Relaxed) {
+                if run.stopped() != RUN {
+                    ctl.stop.store(PAUSE, Ordering::Relaxed);
+                }
+                let done = ctl.done.load(Ordering::Relaxed);
+                let total = ctl.total.load(Ordering::Relaxed);
+                {
+                    let mut g = lock(&run.inner);
+                    if total > 0 {
+                        g.total = total;
+                    }
+                    if g.seg_done.is_empty() {
+                        g.bounds = vec![(0, u64::MAX)];
+                        g.seg_done = vec![0];
+                    }
+                    g.seg_done[0] = done;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        })
+    };
+
+    let result = tokio::task::spawn_blocking({
+        let ctl = ctl.clone();
+        move || ytdlp::download(&exe, &url, &dir, &ctl)
+    })
+    .await;
+
+    finished.store(true, Ordering::Relaxed);
+    let _ = watcher.join();
+
+    match result {
+        Ok(Ok(path)) => {
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| lock(&run.inner).name.clone());
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            {
+                let mut g = lock(&run.inner);
+                g.name = name.clone();
+                g.total = size;
+                g.bounds = vec![(0, size.max(1) - 1)];
+                g.seg_done = vec![size];
+            }
+            {
+                let mut v = lock(tasks);
+                if let Some(t) = v.iter_mut().find(|t| t.id == run.id) {
+                    t.name = name;
+                    t.total = size;
+                    t.done = size;
+                }
+            }
+            Outcome::Done
+        }
+        Ok(Err(DlError::Cancelled)) => stopped(run),
+        Ok(Err(e)) => Outcome::Failed(e.user_message()),
+        Err(_) => Outcome::Failed("yt-dlp stopped unexpectedly".into()),
     }
 }

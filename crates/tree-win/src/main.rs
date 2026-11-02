@@ -22,6 +22,19 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 pub static APP: AtomicPtr<app::App> = AtomicPtr::new(std::ptr::null_mut());
 
+/// Startup breadcrumbs, only when TREE_DEBUG is set: a GUI-subsystem binary has
+/// nowhere to print, and a silent early return must never be a mystery again.
+pub fn dbg(msg: &str) {
+    if std::env::var_os("TREE_DEBUG").is_none() {
+        return;
+    }
+    use std::io::Write;
+    let path = paths::data_dir().join("startup.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{}", msg);
+    }
+}
+
 fn main() {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -37,21 +50,30 @@ fn main() {
     }
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // A second launch hands its link to the window that is already open.
-    if single::forward(&args) {
+
+    // One Tree at a time: an existing window takes the links and comes forward.
+    if single::hand_over(&args) {
+        dbg("handed over to the running window");
         return;
     }
+    dbg("starting as the only instance");
 
     let mut app = app::App::new();
+    dbg("app: constructed");
     APP.store(&mut *app as *mut app::App, Ordering::Relaxed);
-    if app.create_window().is_err() {
-        return;
+    match app.create_window() {
+        Ok(()) => dbg("window: created"),
+        Err(e) => {
+            dbg(&format!("window: FAILED {}", e));
+            return;
+        }
     }
     if !args.is_empty() {
-        app.engine.add_many(&args);
-        app.refresh();
+        app.add_many(&args);
     }
+    dbg("loop: entering");
     message_loop();
+    dbg("loop: exited");
 }
 
 fn message_loop() {
@@ -63,6 +85,16 @@ fn message_loop() {
         }
         if preprocess(&msg) {
             continue;
+        }
+        // Real dialog behaviour for the Add window (Tab order, default button).
+        let ptr = APP.load(Ordering::Relaxed);
+        if !ptr.is_null() {
+            let app = unsafe { &*ptr };
+            if !app.add_dlg.is_invalid()
+                && unsafe { IsDialogMessageW(app.add_dlg, &msg).as_bool() }
+            {
+                continue;
+            }
         }
         unsafe {
             let _ = TranslateMessage(&msg);
@@ -110,8 +142,7 @@ fn preprocess(msg: &MSG) -> bool {
     }
     if ctrl && key == 'V' as u16 && !in_text_field {
         if let Some(url) = clipboard::first_url(&clipboard::read_text().unwrap_or_default()) {
-            app.engine.add(&url);
-            app.refresh();
+            app.add_many(&[url]);
         }
         return true;
     }

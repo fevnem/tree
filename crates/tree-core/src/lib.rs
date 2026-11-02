@@ -12,6 +12,7 @@ pub mod probe;
 pub mod speed;
 pub mod store;
 pub mod worker;
+pub mod ytdlp;
 
 pub use engine::{Cmd, Engine, Outcome};
 pub use error::DlError;

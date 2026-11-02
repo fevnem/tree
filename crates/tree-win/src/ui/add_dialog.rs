@@ -52,7 +52,7 @@ pub fn open(app: &mut App) {
 
         layout(app, dlg);
         center_on(app, dlg);
-        theme::frame(dlg, app.dark);
+        theme::frame(dlg, app.palette.colors.dark);
         let _ = ShowWindow(dlg, SW_SHOW);
         let _ = UpdateWindow(dlg);
         let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(url));
@@ -67,6 +67,7 @@ pub fn open(app: &mut App) {
 
 pub fn commit(app: &mut App) {
     let dlg = app.add_dlg;
+    crate::dbg(&format!("commit: dlg valid={}", !dlg.is_invalid()));
     if dlg.is_invalid() {
         return;
     }
@@ -75,12 +76,19 @@ pub fn commit(app: &mut App) {
     let text = wide::get_text(url_box);
     let dir = wide::get_text(dir_box);
 
+    crate::dbg(&format!(
+        "commit: text_len={} dir={:?} first_line={:?}",
+        text.len(),
+        dir,
+        text.lines().next().unwrap_or("")
+    ));
     let urls: Vec<String> = text
         .lines()
         .map(|l| l.trim().to_string())
         .filter(|l| l.starts_with("http://") || l.starts_with("https://"))
         .collect();
 
+    crate::dbg(&format!("commit: urls={}", urls.len()));
     if urls.is_empty() {
         unsafe {
             MessageBoxW(
@@ -97,8 +105,10 @@ pub fn commit(app: &mut App) {
         app.save_settings();
     }
     app.engine.add_many(&urls);
+    crate::dbg("commit: add_many done");
     app.refresh();
     close(app);
+    crate::dbg("commit: closed");
 }
 
 pub fn browse(app: &mut App) {
@@ -188,10 +198,33 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
     }
     let app = unsafe { &mut *ptr };
 
+    if msg == WM_COMMAND && ((wp.0 >> 16) & 0xFFFF) == 0 {
+        crate::dbg(&format!("dialog button id={}", wp.0 & 0xFFFF));
+    }
+
     match msg {
         WM_SIZE => {
             layout(app, hwnd);
             LRESULT(0)
+        }
+        // The buttons live in this window: without this arm Add/Cancel/Browse
+        // send their notifications into a void.
+        WM_COMMAND => {
+            let id = (wp.0 & 0xFFFF) as i32;
+            let code = ((wp.0 >> 16) & 0xFFFF) as u32;
+            if code == 0 || code == 1 {
+                match id {
+                    controls::ID_OK => commit(app),
+                    controls::ID_CANCEL => close(app),
+                    controls::ID_BROWSE => browse(app),
+                    _ => {}
+                }
+            }
+            LRESULT(0)
+        }
+        WM_DRAWITEM => {
+            app.on_draw_item(lp);
+            LRESULT(1)
         }
         WM_CTLCOLORSTATIC => {
             let hdc = windows::Win32::Graphics::Gdi::HDC(wp.0 as *mut core::ffi::c_void);
@@ -206,7 +239,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
         }
         WM_ERASEBKGND => {
             let hdc = windows::Win32::Graphics::Gdi::HDC(wp.0 as *mut core::ffi::c_void);
-            let mut rect = window::client_rect(hwnd);
+            let rect = window::client_rect(hwnd);
             unsafe {
                 windows::Win32::Graphics::Gdi::FillRect(hdc, &rect, app.palette.background);
             }

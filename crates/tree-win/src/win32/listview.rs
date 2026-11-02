@@ -175,3 +175,14 @@ pub fn hit_test(lv: HWND, x: i32, y: i32) -> i32 {
         .0 as i32
     }
 }
+
+pub fn set_column_width(lv: HWND, col: i32, width: i32) {
+    unsafe {
+        SendMessageW(
+            lv,
+            windows::Win32::UI::Controls::LVM_SETCOLUMNWIDTH,
+            Some(WPARAM(col as usize)),
+            Some(LPARAM(width as isize)),
+        );
+    }
+}

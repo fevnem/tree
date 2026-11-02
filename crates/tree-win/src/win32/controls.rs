@@ -204,14 +204,58 @@ pub fn status_parts(sb: HWND, widths: &[i32]) {
     }
 }
 
-pub fn status_text(sb: HWND, part: usize, s: &str) {
-    let t = wide::wide(s);
+
+/// Status text with explicit flags: `SBT_OWNERDRAW` hands painting to us.
+pub fn status_text_raw(sb: HWND, part: usize, flags: usize, ptr: *const u16) {
     unsafe {
         SendMessageW(
             sb,
             windows::Win32::UI::Controls::SB_SETTEXTW,
-            Some(WPARAM(part)),
-            Some(LPARAM(wide::pcw(&t).0 as isize)),
+            Some(WPARAM(flags)),
+            Some(LPARAM(ptr as isize)),
+        );
+        let _ = part;
+    }
+}
+
+/// Switch a button between the stock look and our own painting.
+pub fn set_owner_draw(hwnd: HWND, on: bool) {
+    unsafe {
+        let style =
+            windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(
+                hwnd,
+                windows::Win32::UI::WindowsAndMessaging::GWL_STYLE,
+            ) as u32;
+        let base = style & !0xF; // BS_TYPEMASK
+        let kind = if on {
+            windows::Win32::UI::WindowsAndMessaging::BS_OWNERDRAW as u32
+        } else {
+            windows::Win32::UI::WindowsAndMessaging::BS_PUSHBUTTON as u32
+        };
+        windows::Win32::UI::WindowsAndMessaging::SetWindowLongPtrW(
+            hwnd,
+            windows::Win32::UI::WindowsAndMessaging::GWL_STYLE,
+            (base | kind) as isize,
+        );
+        let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, true);
+    }
+}
+
+/// Progress bars keep the system trough unless told otherwise.
+pub fn progress_colors(bar: HWND, background: u32, fill: u32) {
+    use windows::Win32::UI::Controls::{PBM_SETBARCOLOR, PBM_SETBKCOLOR};
+    unsafe {
+        SendMessageW(
+            bar,
+            PBM_SETBKCOLOR,
+            Some(WPARAM(0)),
+            Some(LPARAM(background as isize)),
+        );
+        SendMessageW(
+            bar,
+            PBM_SETBARCOLOR,
+            Some(WPARAM(0)),
+            Some(LPARAM(fill as isize)),
         );
     }
 }

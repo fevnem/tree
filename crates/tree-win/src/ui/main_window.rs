@@ -67,9 +67,26 @@ impl App {
 
         let parts = [width * 42 / 100, width * 78 / 100, -1];
         controls::status_parts(self.ui.status, &parts);
+
+        // Fill the empty space to the right of ETA by widening the Name column,
+        // instead of leaving a phantom seventh column.
+        let others: i32 = (1..6)
+            .map(|i| unsafe {
+                SendMessageW(
+                    self.ui.list,
+                    windows::Win32::UI::Controls::LVM_GETCOLUMNWIDTH,
+                    Some(windows::Win32::Foundation::WPARAM(i as usize)),
+                    Some(LPARAM(0)),
+                )
+                .0 as i32
+            })
+            .sum();
+        let name_width = (width - pad * 2 - others - self.s(4)).max(self.s(220));
+        listview::set_column_width(self.ui.list, 0, name_width);
     }
 
     pub fn refresh(&mut self) {
+        let was_empty = self.tasks.is_empty();
         let mut tasks: Vec<Task> = self.engine.snapshot();
         let needle = crate::win32::wide::get_text(self.ui.filter).trim()
         .to_lowercase();
@@ -118,6 +135,9 @@ impl App {
         }
 
         self.tasks = tasks;
+        if was_empty != self.tasks.is_empty() {
+            self.layout();
+        }
         self.update_chrome();
     }
 
@@ -167,15 +187,17 @@ impl App {
             }
             s
         };
-        controls::status_text(self.ui.status, 0, &summary);
+        let summary_for_status = summary.clone();
+        self.set_status(0, &summary_for_status);
 
         let selected = self.selected_ids();
         let detail = match self.tasks.iter().find(|t| selected.contains(&t.id)) {
             None => strings::EMPTY_SELECTION.to_string(),
             Some(task) => detail_line(task),
         };
-        controls::status_text(self.ui.status, 1, &detail);
-        controls::status_text(self.ui.status, 2, &self.free_space());
+        self.set_status(1, &detail);
+        let free = self.free_space();
+        self.set_status(2, &free);
 
         let (permille, paused, error) = match self.tasks.iter().find(|t| selected.contains(&t.id)) {
             Some(task) => (

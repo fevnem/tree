@@ -1,7 +1,7 @@
 //! Every string the user can read. One file, so wording stays consistent.
 
 pub const APP_NAME: &str = "Tree";
-pub const WINDOW_TITLE: &str = "Tree — Download Manager";
+pub const WINDOW_TITLE: &str = "Tree";
 
 pub const BTN_ADD: &str = "Add";
 pub const BTN_PAUSE: &str = "Pause";
@@ -23,10 +23,13 @@ pub const PICK_FOLDER: &str = "Choose where Tree saves downloads";
 pub const NO_TASKS: &str = "Drop a link here, or press Ctrl+N to add one";
 pub const EMPTY_SELECTION: &str = "No download selected";
 
+pub const TRAY_IDLE: &str = "Tree · idle";
+
 pub fn about() -> String {
     format!(
         "{name} {version}\n\nA native Windows download manager.\n\
-         Parallel ranged connections, resumable, no runtime to install.\n\n\
+         Parallel ranged connections, resumable, no runtime to install.\n\
+         Video and audio links are handed to yt-dlp when it is available.\n\n\
          Engine: Rust · tokio · SChannel\nUI: Win32\n",
         name = APP_NAME,
         version = env!("CARGO_PKG_VERSION")
@@ -35,4 +38,13 @@ pub fn about() -> String {
 
 pub fn confirm_delete(name: &str) -> String {
     format!("Delete “{}” from disk? This cannot be undone.", name)
+}
+
+pub fn tray_tooltip(percent: Option<u32>, active: usize) -> String {
+    match (percent, active) {
+        (_, 0) => TRAY_IDLE.to_string(),
+        (Some(p), 1) => format!("Tree · {} · {}%", "downloading", p),
+        (Some(p), n) => format!("Tree · {} active · {}%", n, p),
+        (None, n) => format!("Tree · {} active", n),
+    }
 }

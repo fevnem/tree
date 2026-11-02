@@ -1,9 +1,9 @@
 //! The native menu bar. One menu tree, rebuilt when settings change so the
 //! check marks are always true.
 
+use super::theme;
 use super::wide;
 use windows::core::PCWSTR;
-
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateMenu, CreatePopupMenu, HMENU, MENU_ITEM_FLAGS, MF_CHECKED, MF_POPUP,
     MF_SEPARATOR, MF_STRING,
@@ -25,6 +25,9 @@ pub const ID_EXIT: usize = 1105;
 pub const ID_ABOUT: usize = 1106;
 pub const ID_WATCH: usize = 1107;
 pub const ID_TRAY: usize = 1108;
+pub const ID_SHOW: usize = 1109;
+pub const ID_YTDLP: usize = 1110;
+
 pub const ID_CONNS_BASE: usize = 1200;
 pub const ID_SPEED_BASE: usize = 1300;
 pub const ID_THEME_BASE: usize = 1400;
@@ -58,7 +61,7 @@ fn check(on: bool) -> MENU_ITEM_FLAGS {
 }
 
 /// Build the whole bar for the current settings.
-pub fn build(conns: usize, speed_limit: u64, watch: bool, tray: bool, theme: &str) -> Option<HMENU> {
+pub fn build(conns: usize, speed_limit: u64, watch: bool, tray: bool, theme_name: &str) -> Option<HMENU> {
     unsafe {
         let bar = CreateMenu().ok()?;
 
@@ -85,7 +88,12 @@ pub fn build(conns: usize, speed_limit: u64, watch: bool, tray: bool, theme: &st
         let view = CreatePopupMenu().ok()?;
         let conns_menu = CreatePopupMenu().ok()?;
         for n in [1usize, 2, 4, 8, 16] {
-            item(conns_menu, check(conns == n), ID_CONNS_BASE + n, &format!("{} connection{}", n, if n == 1 { "" } else { "s" }));
+            item(
+                conns_menu,
+                check(conns == n),
+                ID_CONNS_BASE + n,
+                &format!("{} connection{}", n, if n == 1 { "" } else { "s" }),
+            );
         }
         submenu(view, conns_menu, "&Connections per file");
 
@@ -106,19 +114,21 @@ pub fn build(conns: usize, speed_limit: u64, watch: bool, tray: bool, theme: &st
         }
         submenu(view, speed, "Speed &limit");
 
+        // Ten themes, all reachable from the same submenu.
         let themes = CreatePopupMenu().ok()?;
-        for (i, (label, key)) in [("&System", "system"), ("&Light", "light"), ("&Dark", "dark")]
-            .iter()
-            .enumerate()
-        {
-            item(themes, check(theme == *key), ID_THEME_BASE + i, label);
+        for (i, (key, label)) in theme::THEMES.iter().enumerate() {
+            item(themes, check(theme_name == *key), ID_THEME_BASE + i, label);
         }
         submenu(view, themes, "&Theme");
 
         separator(view);
         item(view, check(watch), ID_WATCH, "Watch &clipboard for links");
-        item(view, check(tray), ID_TRAY, "Minimize to &tray on close");
+        item(view, check(tray), ID_TRAY, "Close to the &tray");
         submenu(bar, view, "&View");
+
+        let tools = CreatePopupMenu().ok()?;
+        item(tools, MF_STRING, ID_YTDLP, "Download &yt-dlp (video support)…");
+        submenu(bar, tools, "&Tools");
 
         let help = CreatePopupMenu().ok()?;
         item(help, MF_STRING, ID_ABOUT, "&About Tree");
@@ -149,14 +159,17 @@ pub fn row_menu(any_running: bool, any_paused: bool) -> Option<HMENU> {
     }
 }
 
-pub fn tray_menu() -> Option<HMENU> {
+pub fn tray_menu(has_tasks: bool) -> Option<HMENU> {
     unsafe {
         let menu = CreatePopupMenu().ok()?;
-        item(menu, MF_STRING, ID_ADD, "Open &Tree");
+        item(menu, MF_STRING, ID_SHOW, "Open &Tree");
+        item(menu, MF_STRING, ID_ADD, "&Add link…");
         separator(menu);
-        item(menu, MF_STRING, ID_PAUSE_ALL, "Pause all");
-        item(menu, MF_STRING, ID_RESUME_ALL, "Resume all");
-        separator(menu);
+        if has_tasks {
+            item(menu, MF_STRING, ID_PAUSE_ALL, "Pause all");
+            item(menu, MF_STRING, ID_RESUME_ALL, "Resume all");
+            separator(menu);
+        }
         item(menu, MF_STRING, ID_EXIT, "E&xit");
         Some(menu)
     }
