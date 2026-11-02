@@ -375,8 +375,8 @@ impl App {
     pub fn on_notify(&mut self, lp: LPARAM) {
         unsafe {
             let hdr = &*(lp.0 as *const NMHDR);
-            let code = hdr.code as u32;
-            if code == windows::Win32::UI::Controls::LVN_COLUMNCLICK as u32 {
+            let code = hdr.code;
+            if code == windows::Win32::UI::Controls::LVN_COLUMNCLICK {
                 let info = &*(lp.0 as *const windows::Win32::UI::Controls::NMLISTVIEW);
                 let col = info.iSubItem;
                 if self.settings.sort_col == col {
@@ -429,10 +429,10 @@ impl App {
     pub fn on_timer(&mut self) {
         self.ticks = self.ticks.wrapping_add(1);
         self.refresh();
-        if self.ticks % 4 == 0 {
+        if self.ticks.is_multiple_of(4) {
             self.poll_clipboard();
         }
-        if self.ticks % 8 == 0 {
+        if self.ticks.is_multiple_of(8) {
             self.update_tray();
         }
     }
@@ -498,7 +498,7 @@ impl App {
         let hdc = HDC(wp.0 as *mut core::ffi::c_void);
         let mut rect = window::client_rect(self.hwnd);
         unsafe {
-            FillRect(hdc, &mut rect, self.palette.background);
+            FillRect(hdc, &rect, self.palette.background);
         }
         LRESULT(1)
     }
@@ -662,7 +662,7 @@ fn load_icon() -> HICON {
     unsafe {
         LoadImageW(
             Some(window::instance()),
-            PCWSTR(1 as *const u16),
+            PCWSTR(std::ptr::dangling::<u16>()),
             IMAGE_ICON,
             0,
             0,
@@ -730,7 +730,7 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_COMMAND => {
-            let id = (wp.0 & 0xFFFF) as usize;
+            let id = (wp.0 & 0xFFFF);
             let code = ((wp.0 >> 16) & 0xFFFF) as u32;
             if id == controls::ID_FILTER as usize && code == EN_CHANGE {
                 app.refresh();

@@ -208,7 +208,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             let hdc = windows::Win32::Graphics::Gdi::HDC(wp.0 as *mut core::ffi::c_void);
             let mut rect = window::client_rect(hwnd);
             unsafe {
-                windows::Win32::Graphics::Gdi::FillRect(hdc, &mut rect, app.palette.background);
+                windows::Win32::Graphics::Gdi::FillRect(hdc, &rect, app.palette.background);
             }
             LRESULT(1)
         }

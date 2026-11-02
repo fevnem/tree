@@ -17,6 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 /// Segoe UI at the size the OS itself uses — the single biggest "this is a real
 /// Windows app" detail.
+#[allow(clippy::field_reassign_with_default)]
 pub fn message_font() -> HFONT {
     unsafe {
         let mut metrics = NONCLIENTMETRICSW::default();

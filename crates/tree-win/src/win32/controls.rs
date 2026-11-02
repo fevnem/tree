@@ -27,6 +27,7 @@ pub const ID_CANCEL: i32 = 1014;
 pub const ID_LABEL_URL: i32 = 1015;
 pub const ID_LABEL_DIR: i32 = 1016;
 
+#[allow(clippy::too_many_arguments)]
 fn child(
     class: PCWSTR,
     text: PCWSTR,

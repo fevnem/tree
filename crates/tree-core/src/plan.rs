@@ -82,7 +82,7 @@ pub fn name_from_url(url: &str) -> String {
     if let Some(u) = parsed {
         let last = u
             .path_segments()
-            .and_then(|s| s.filter(|p| !p.is_empty()).last())
+            .and_then(|mut s| s.rfind(|p| !p.is_empty()))
             .unwrap_or("");
         if !last.is_empty() {
             let decoded = percent_decode_str(last).decode_utf8_lossy().to_string();

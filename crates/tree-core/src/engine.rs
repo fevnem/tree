@@ -285,8 +285,8 @@ impl Runner {
                 }
                 _ = tick.tick() => {
                     n = n.wrapping_add(1);
-                    self.mirror(n % 4 == 0);
-                    if n % 8 == 0 && self.dirty {
+                    self.mirror(n.is_multiple_of(4));
+                    if n.is_multiple_of(8) && self.dirty {
                         self.save();
                     }
                     self.start_queued(&tx);
