@@ -1,7 +1,7 @@
 ; Tree — per-user installer. No admin prompt, no services, no registry sprawl.
 Unicode true
 Name "Tree — download manager"
-OutFile "..\dist\Tree_0.3.1_setup.exe"
+OutFile "..\dist\Tree_0.3.2_setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\Tree"
 InstallDirRegKey HKCU "Software\Tree" "InstallDir"
 RequestExecutionLevel user
@@ -28,7 +28,7 @@ Section "Tree (required)" SecMain
 
   WriteRegStr HKCU "Software\Tree" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Tree" "DisplayName" "Tree — download manager"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Tree" "DisplayVersion" "0.3.1"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Tree" "DisplayVersion" "0.3.2"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Tree" "DisplayIcon" "$INSTDIR\tree.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Tree" "Publisher" "R"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Tree" "UninstallString" "$INSTDIR\uninstall.exe"

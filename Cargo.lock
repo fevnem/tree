@@ -1253,7 +1253,7 @@ dependencies = [
 
 [[package]]
 name = "tree-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "futures-util",
  "percent-encoding",
@@ -1268,7 +1268,7 @@ dependencies = [
 
 [[package]]
 name = "tree-win"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "tree-core",
  "windows",

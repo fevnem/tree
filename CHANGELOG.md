@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2 — 2026-11-02
+
+* **Fixed: no tray icon.** `load_icon` passed a dangling pointer as the resource
+  name, so both window and tray icons silently fell back to the generic system
+  icon. It now uses `MAKEINTRESOURCE(1)`; the tray shows Tree's own icon.
+* Tray registration logs its result under `TREE_DEBUG=1` (`tray: add ok=… icon=…`).
+
 ## 0.3.1 — 2026-11-02
 
 * **Engine:** respect `Retry-After` on 429/503 instead of hammering a busy server.

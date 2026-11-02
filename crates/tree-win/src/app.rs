@@ -695,7 +695,13 @@ impl App {
             ..Default::default()
         };
         wide::copy_into(&mut data.szTip, &strings::tray_tooltip(None, 0));
-        unsafe { Shell_NotifyIconW(NIM_ADD, &data).as_bool() }
+        let ok = unsafe { Shell_NotifyIconW(NIM_ADD, &data).as_bool() };
+        crate::dbg(&format!(
+            "tray: add ok={} icon={:?}",
+            ok,
+            self.small_icon.0
+        ));
+        ok
     }
 
     pub fn update_tray(&mut self) {
@@ -854,6 +860,9 @@ impl App {
     }
 }
 
+/// Icon resource id in `res/app.rc`.
+const APP_ICON: u16 = 1;
+
 fn load_icon(small: bool) -> HICON {
     unsafe {
         let (cx, cy) = if small {
@@ -864,9 +873,12 @@ fn load_icon(small: bool) -> HICON {
         } else {
             (GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON))
         };
+        // MAKEINTRESOURCE(1): the icon lives at id 1 in app.rc. Passing a
+        // dangling pointer here silently fell back to the generic system icon,
+        // which in the tray looks like no icon at all.
         LoadImageW(
             Some(window::instance()),
-            PCWSTR(std::ptr::dangling::<u16>()),
+            PCWSTR(APP_ICON as usize as *const u16),
             IMAGE_ICON,
             cx,
             cy,
