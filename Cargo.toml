@@ -1,0 +1,20 @@
+[workspace]
+members = ["crates/tree-core", "crates/tree-win"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["R"]
+repository = ""
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = 3
+
+[profile.release.package."*"]
+opt-level = 3

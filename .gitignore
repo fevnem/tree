@@ -1,0 +1,6 @@
+/target
+/dist
+*.tree-part
+*.tree-part.*
+state.json.tmp
+*.bad

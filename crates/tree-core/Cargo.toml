@@ -1,0 +1,27 @@
+[package]
+name = "tree-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Parallel, resumable HTTP download engine for Tree"
+
+[dependencies]
+futures-util = "0.3"
+percent-encoding = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
+url = "2"
+
+# Windows: SChannel through native-tls. No OpenSSL, no ring, no C toolchain surprises.
+[target.'cfg(windows)'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["stream", "native-tls"] }
+
+# Linux build is test-only: rustls keeps it independent of the distro's OpenSSL.
+[target.'cfg(not(windows))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
+
+[dev-dependencies]
+sha2 = "0.10"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread"] }
