@@ -107,6 +107,8 @@ pub struct TaskRun {
     pub bucket: Arc<Bucket>,
     /// Headers copied from the request that created the task.
     pub headers: Vec<(String, String)>,
+    /// Validators seen by the probe; every response must keep matching them.
+    pub validator: Mutex<Option<(String, String)>>,
     pub inner: Mutex<Run>,
 }
 
@@ -124,6 +126,7 @@ impl TaskRun {
             client,
             kind: t.kind,
             headers,
+            validator: Mutex::new(None),
             stop: AtomicU8::new(RUN),
             bucket,
             inner: Mutex::new(Run {
@@ -711,6 +714,11 @@ async fn run_task(
         let name = plan::unique_name(&run.dir, &desired);
         let count = plan::segment_count(probed.total, settings.conns(), probed.ranges);
         let segments = plan::split_segments(probed.total, count);
+        if let Some(value) = probed.etag.clone() {
+            *lock(&run.validator) = Some(("etag".to_string(), value));
+        } else if let Some(value) = probed.modified.clone() {
+            *lock(&run.validator) = Some(("last-modified".to_string(), value));
+        }
         {
             let mut g = lock(&run.inner);
             g.name = name.clone();

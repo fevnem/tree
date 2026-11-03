@@ -10,6 +10,8 @@ pub enum DlError {
     Permission(String),
     Disk(String),
     RangeUnsupported,
+    /// The server's validator changed between requests.
+    Changed,
     Cancelled,
     Incomplete,
 }
@@ -36,6 +38,7 @@ impl DlError {
             DlError::NoSpace => "Disk is full".into(),
             DlError::Permission(s) => format!("Access denied — {}", s),
             DlError::Disk(s) => format!("Disk error — {}", s),
+            DlError::Changed => "The file changed on the server while downloading".into(),
             DlError::RangeUnsupported => "Server stopped supporting resume for this file".into(),
             DlError::Cancelled => "Cancelled".into(),
             DlError::Incomplete => "Download stopped before the end — press Resume".into(),

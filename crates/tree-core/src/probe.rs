@@ -1,7 +1,7 @@
 //! Size / resume / filename discovery with a single ranged request.
 
 use crate::{error::DlError, plan};
-use reqwest::header::{CONTENT_DISPOSITION, CONTENT_RANGE, CONTENT_TYPE};
+use reqwest::header::{CONTENT_DISPOSITION, CONTENT_RANGE, CONTENT_TYPE, ETAG, LAST_MODIFIED};
 use reqwest::{Client, Response};
 
 pub struct Probe {
@@ -9,6 +9,11 @@ pub struct Probe {
     pub ranges: bool,
     pub name: Option<String>,
     pub url: String,
+    /// Strong validators. When present, every segment response must still match
+    /// them: a file that changes mid-download would otherwise be stitched
+    /// together from two different versions.
+    pub etag: Option<String>,
+    pub modified: Option<String>,
 }
 
 /// `bytes 0-0/12345` -> `Some(12345)`, `bytes 0-0/*` -> `None`.
@@ -20,6 +25,13 @@ pub fn parse_content_range(value: &str) -> Option<u64> {
     } else {
         rest.parse().ok()
     }
+}
+
+fn header(resp: &Response, name: reqwest::header::HeaderName) -> Option<String> {
+    resp.headers()
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_string())
 }
 
 fn name_from(resp: &Response) -> Option<String> {
@@ -70,11 +82,15 @@ pub async fn probe(
             .send()
             .await?;
         let total = head.content_length().unwrap_or(0);
+        let etag = header(&head, ETAG);
+        let modified = header(&head, LAST_MODIFIED);
         return Ok(Probe {
             total,
             ranges: false,
             name: name_from(&head),
             url: head.url().to_string(),
+            etag,
+            modified,
         });
     }
 
@@ -91,6 +107,8 @@ pub async fn probe(
         .unwrap_or(0);
     let ranges = code == 206 && total > 0;
     let name = name_from(&resp);
+    let etag = header(&resp, ETAG);
+    let modified = header(&resp, LAST_MODIFIED);
     // Body (at most one byte, or the start of a stream we do not want) is dropped.
     drop(resp);
     Ok(Probe {
@@ -98,6 +116,8 @@ pub async fn probe(
         ranges,
         name,
         url: final_url,
+        etag,
+        modified,
     })
 }
 

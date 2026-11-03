@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.1 — 2026-11-03
+
+* **A file that changes mid-download can no longer be delivered corrupt.** The
+  probe records `ETag` (or `Last-Modified`), and every segment response must still
+  match it; a mismatch aborts the task with "The file changed on the server while
+  downloading" and keeps the part file instead of renaming a Frankenstein file into
+  place. Servers that send no validator behave as before — refusing them would
+  break half the web.
+* Verified both ways: a server with a stable ETag completes to 100 %; the same
+  server rotating its ETag per request fails honestly at 0 % and leaves
+  `*.tree-part` behind.
+* Tests: 3 new (`tests/validators.rs`) plus the comparison extracted as
+  `validator_conflict`, 26 unit + 3 live in total.
+
 ## 0.6.0 — 2026-11-03
 
 Driven by the ten research reports (engine, layout, tokens, queues, browser

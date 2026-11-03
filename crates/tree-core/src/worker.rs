@@ -7,6 +7,20 @@ use crate::io;
 use futures_util::StreamExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+fn lock_option(m: &Mutex<Option<(String, String)>>) -> Option<(String, String)> {
+    m.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// A response is only usable when it still carries the validator the probe saw.
+/// A missing header on either side means the server never promised stability, so
+/// there is nothing to compare.
+pub fn validator_conflict(expected: Option<&str>, actual: Option<&str>) -> bool {
+    match (expected, actual) {
+        (Some(expected), Some(actual)) => expected.trim() != actual.trim(),
+        _ => false,
+    }
+}
 use std::time::{Duration, Instant};
 
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -137,6 +151,17 @@ async fn fetch(run: &Arc<TaskRun>, seg: usize, file: &std::fs::File) -> Result<S
                 Some(from) if from == off => {}
                 Some(_) | None => return Err(DlError::RangeUnsupported),
             }
+        }
+    }
+    if let Some((name, expected)) = lock_option(&run.validator) {
+        let actual = if name == "etag" {
+            resp.headers().get(reqwest::header::ETAG)
+        } else {
+            resp.headers().get(reqwest::header::LAST_MODIFIED)
+        };
+        let actual = actual.and_then(|v| v.to_str().ok());
+        if validator_conflict(Some(&expected), actual) {
+            return Err(DlError::Changed);
         }
     }
     if code == 429 || code == 503 {

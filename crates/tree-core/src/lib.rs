@@ -35,3 +35,5 @@ pub fn http_client() -> reqwest::Client {
         .build()
         .expect("http client")
 }
+
+pub use worker::validator_conflict;

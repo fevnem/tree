@@ -20,6 +20,10 @@ RATE = (int(sys.argv[3]) if len(sys.argv) > 3 else 0) * 1024 * 1024
 # which makes one connection lag so adaptive stealing can be observed.
 import os
 SLOW_ZONE = int(os.environ.get("SLOW_ZONE_MB", "0")) * 1024 * 1024
+# A stable ETag, optionally rotating per request to simulate a file that changes
+# under a segmented download.
+ROTATE_ETAG = os.environ.get("ROTATE_ETAG", "") == "1"
+_etag_counter = [0]
 # When set, requests without this cookie get 403 — proves header passthrough.
 REQUIRE_COOKIE = os.environ.get("REQUIRE_COOKIE", "")
 BLOB = bytes((i * 37 + 11) & 0xFF for i in range(1 << 20)) * (SIZE >> 20)
@@ -46,6 +50,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(length))
         self.send_header("Content-Disposition", 'attachment; filename="%s"' % self._name())
+        if ROTATE_ETAG:
+            _etag_counter[0] += 1
+            self.send_header("ETag", '"v%d"' % _etag_counter[0])
+        else:
+            self.send_header("ETag", '"stable-v1"')
         for key, value in (extra or {}).items():
             self.send_header(key, value)
         self.end_headers()
