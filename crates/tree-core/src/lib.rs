@@ -3,6 +3,7 @@
 //! No Win32 here on purpose: everything in this crate compiles and is tested on
 //! any platform, which is how the parallel-download logic is verified.
 
+pub mod bridge;
 pub mod engine;
 pub mod error;
 pub mod io;

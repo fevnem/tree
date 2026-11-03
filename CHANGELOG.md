@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.6.0 — 2026-11-03
+
+Driven by the ten research reports (engine, layout, tokens, queues, browser
+protocol, yt-dlp, census, packaging, Win32, trackers).
+
+* **Security: the bridge is no longer a download-CSRF hole.** `GET /add?url=…` is
+  gone — a cross-origin GET needs no preflight, so any web page could have queued
+  downloads. The endpoint is now `POST /v1/downloads` with a `X-Tree-Client`
+  header, which forces a CORS preflight that is answered only for extension
+  origins. `X-Tree-Client` is required even past the preflight.
+* **Layout, measured rather than guessed** (median of nine shipping managers):
+  rows 52 → 32 px, progress bar 10 → 4 px pill with the percentage outside,
+  status strip 28 → 24 px, sparkline 180×16 → 64×14, detail pane 116 → 128 px with
+  20×9 per-connection cells and 8 px gaps.
+* **Palette** now uses the researched dark tokens: `#0D0F12` background,
+  `#14171C` rows, `#E6E9EF` text, `#9AA4B2` secondary, `#4C8DFF` accent.
+* **yt-dlp**: explicit `-f bv*+ba/b`, `--merge-output-format mp4` and
+  `--ffmpeg-location`; a missing output file is now an error even when yt-dlp
+  exits 0 and prints the path (the missing-ffmpeg case), instead of a silent
+  "done" with fragmented files on disk.
+* **One source of truth for the version**: `scripts/version.sh` rewrites the
+  `.rc` and installer from `Cargo.toml`, refuses a mismatched release tag and
+  requires a matching CHANGELOG section — this class of drift already shipped a
+  wrong archive once.
+* Tests: 4 new bridge tests (JSON reading, escapes, origin gating).
+
 ## 0.5.1 — 2026-11-03
 
 * **Authenticated downloads.** The browser bridge now accepts `cookie`, `referer`

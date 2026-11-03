@@ -142,6 +142,12 @@ pub fn download(
     ctl: &Arc<Ctl>,
 ) -> Result<PathBuf, DlError> {
     ctl.reset();
+    // ffmpeg is expected beside yt-dlp.exe; naming the folder keeps yt-dlp from
+    // hunting PATH and silently skipping the merge.
+    let bin_dir = exe
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let mut child = Command::new(exe)
         .args([
             "--newline",
@@ -149,6 +155,11 @@ pub fn download(
             "--no-playlist",
             "--windows-filenames",
             "--continue",
+            // Best video + best audio, merged, with a predictable container.
+            "-f",
+            "bv*+ba/b",
+            "--merge-output-format",
+            "mp4",
             "--progress-delta",
             "0.5",
             "--progress-template",
@@ -158,6 +169,9 @@ pub fn download(
             "-P",
         ])
         .arg(dir)
+        // ffmpeg lives next to yt-dlp; without it yt-dlp warns, exits 0 and
+        // leaves unmerged fragments, so the location is explicit.
+        .args(["--ffmpeg-location", &bin_dir])
         .args(["-o", "%(title)s.%(ext)s"])
         .arg(url)
         .stdin(Stdio::null())
@@ -240,6 +254,13 @@ pub fn download(
     let path = final_path.ok_or_else(|| {
         DlError::Disk("yt-dlp finished but did not report a file path".into())
     })?;
+    // Exit 0 and a printed path prove nothing: with ffmpeg missing, yt-dlp
+    // prints the merged name while only the fragments exist.
+    if !path.exists() {
+        return Err(DlError::Disk(
+            "yt-dlp reported a file it did not produce (ffmpeg missing?)".into(),
+        ));
+    }
     // Freeze the counters at 100 %.
     if let Ok(meta) = std::fs::metadata(&path) {
         ctl.total.store(meta.len(), Ordering::Relaxed);

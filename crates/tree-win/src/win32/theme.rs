@@ -57,11 +57,12 @@ pub fn palette_for(theme: &str) -> Colors {
             accent: rgb(0, 120, 215),
             dark: false,
         },
+        // Measured from shipping managers: #0D0F12 / #14171C / #E6E9EF / #9AA4B2 / #4C8DFF
         "dark" => Colors {
-            bg: rgb(28, 28, 28),
-            surface: rgb(32, 32, 32),
-            text: rgb(230, 230, 230),
-            dim: rgb(172, 174, 180),
+            bg: rgb(13, 15, 18),
+            surface: rgb(20, 23, 28),
+            text: rgb(230, 233, 239),
+            dim: rgb(154, 164, 178),
             accent: rgb(76, 141, 255),
             dark: true,
         },

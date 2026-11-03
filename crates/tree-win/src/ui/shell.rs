@@ -24,9 +24,9 @@ use windows::Win32::Foundation::{LPARAM, WPARAM};
 // Logical sizes; every one is scaled through `App::s` at use.
 pub const TOOLBAR_H: i32 = 46;
 pub const NAV_W: i32 = 190;
-pub const DETAIL_H: i32 = 116;
-pub const STATUS_H: i32 = 28;
-pub const ROW_H: i32 = 52;
+pub const DETAIL_H: i32 = 128;
+pub const STATUS_H: i32 = 24;
+pub const ROW_H: i32 = 32;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Filter {
@@ -638,13 +638,13 @@ fn paint_details(app: &App, hdc: HDC, l: &Layout) {
     let grid_left = l.details.left + left_w + app.s(8);
     let grid_right = l.details.right - pad;
     let n = task.segments.len().max(1);
-    let gap = app.s(3);
+    let gap = app.s(8);
     let cell_w = ((grid_right - grid_left) - gap * (n as i32 - 1)) / n as i32;
     if cell_w < app.s(4) {
         return;
     }
     let top = l.details.top + app.s(14);
-    let height = app.s(14);
+    let height = app.s(9);
     let caption = rect(grid_left, top, grid_right, top + app.s(16));
     text(
         hdc,
@@ -720,8 +720,8 @@ fn paint_status(app: &App, hdc: HDC, l: &Layout) {
     text(hdc, &summary, mid, c.dim, text_flags(DT_LEFT), HGDIOBJ(app.font.0));
 
     // Sparkline of total throughput, newest on the right.
-    let graph_w = app.s(180);
-    let graph_h = app.s(16);
+    let graph_w = app.s(64);
+    let graph_h = app.s(14);
     let right = l.status.right - app.s(14);
     let left_x = right - graph_w;
     let bottom = l.status.bottom - app.s(7);
@@ -856,7 +856,7 @@ pub fn draw_row(app: &App, hdc: HDC, rc: RECT, row: usize, selected: bool) {
     let total = task.total.max(1);
     let done = task.done.min(total);
     let frac = done as f64 / total as f64;
-    let bar_h = app.s(10);
+    let bar_h = app.s(4);
     let bar = rect(
         prog_r.left,
         rc.top + (height - bar_h) / 2,

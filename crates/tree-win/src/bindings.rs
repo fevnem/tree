@@ -1,10 +1,18 @@
 //! A loopback-only HTTP endpoint so a browser extension can add downloads.
 //!
-//! Deliberately tiny and boring: bind 127.0.0.1, answer `GET /add?url=…`, ignore
-//! everything else, never touch the network. Requests are handed to the UI thread
-//! through a channel, so no Win32 call ever happens off the UI thread.
+//! Two rules came out of studying real managers:
+//!
+//! * **A web page must not be able to queue downloads.** `GET /add?url=…` is a
+//!   simple request, so any page could fire it cross-origin (download CSRF). The
+//!   endpoint therefore takes a **POST with a custom header**, which forces a CORS
+//!   preflight; the preflight is only answered for extension origins, so a page
+//!   never gets to send the request at all.
+//! * **Authenticated links need their headers.** Cookies and the referer travel in
+//!   the JSON body and are applied to the probe and every segment.
 
 use std::io::{Read, Write};
+pub use tree_core::bridge::Request;
+use tree_core::bridge::{origin_allowed, parse_download};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{channel, Receiver};
 
@@ -12,12 +20,6 @@ pub const PORT: u16 = 17817;
 
 /// One link from the browser, with the headers that make it work: a download
 /// behind a session cookie fails without them.
-#[derive(Clone, Debug)]
-pub struct Request {
-    pub url: String,
-    pub headers: Vec<(String, String)>,
-}
-
 /// Start the listener. Returns `None` if the port is taken (another Tree, or an
 /// unrelated program) — the app still works, only the extension bridge is off.
 pub fn start(port: u16) -> Option<Receiver<Vec<Request>>> {
@@ -28,8 +30,8 @@ pub fn start(port: u16) -> Option<Receiver<Vec<Request>>> {
         .spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
-                if let Some(urls) = handle(stream) {
-                    if tx.send(urls).is_err() {
+                if let Some(requests) = handle(stream) {
+                    if tx.send(requests).is_err() {
                         break;
                     }
                 }
@@ -41,44 +43,98 @@ pub fn start(port: u16) -> Option<Receiver<Vec<Request>>> {
 
 fn handle(mut stream: TcpStream) -> Option<Vec<Request>> {
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; 16384];
     let n = stream.read(&mut buf).unwrap_or(0);
     if n == 0 {
         return None;
     }
-    let request = String::from_utf8_lossy(&buf[..n]).to_string();
-    let mut lines = request.lines();
-    let first = lines.next().unwrap_or("");
-    let mut parts = first.split_whitespace();
+    let text = String::from_utf8_lossy(&buf[..n]).to_string();
+    let (head, body) = match text.split_once("\r\n\r\n") {
+        Some((h, b)) => (h, b),
+        None => (text.as_str(), ""),
+    };
+    let mut lines = head.lines();
+    let request_line = lines.next().unwrap_or("");
+    let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("");
-    let target = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("");
 
+    let mut origin = String::new();
+    let mut has_client_header = false;
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        match name.trim().to_ascii_lowercase().as_str() {
+            "origin" => origin = value.trim().to_string(),
+            "x-tree-client" => has_client_header = true,
+            _ => {}
+        }
+    }
+
+    // Preflight: only extension pages may talk to this endpoint at all.
     if method == "OPTIONS" {
-        respond(&mut stream, 204, "", true);
+        if origin_allowed(&origin) {
+            respond_preflight(&mut stream, &origin);
+        } else {
+            respond(&mut stream, 403, r#"{"ok":false}"#, None);
+        }
         return None;
     }
 
-    let body = if target.starts_with("/add?") {
-        let (url, headers) = parse_add(target);
-        if url.starts_with("http://") || url.starts_with("https://") {
-            respond(&mut stream, 200, r#"{"ok":true}"#, true);
-            return Some(vec![Request { url, headers }]);
-        }
-        r#"{"ok":false,"error":"not an http(s) url"}"#
-    } else if target.starts_with("/ping") {
-        r#"{"ok":true,"app":"tree"}"#
-    } else {
-        respond(&mut stream, 404, r#"{"ok":false}"#, true);
+    if method == "GET" && path.starts_with("/ping") {
+        respond(&mut stream, 200, r#"{"ok":true,"app":"tree","api":2}"#, None);
         return None;
-    };
-    respond(&mut stream, 200, body, true);
+    }
+
+    if method == "POST" && path.starts_with("/v1/downloads") {
+        if !has_client_header {
+            respond(
+                &mut stream,
+                400,
+                r#"{"ok":false,"error":"missing X-Tree-Client"}"#,
+                None,
+            );
+            return None;
+        }
+        if let Some(request) = parse_download(body) {
+            respond(&mut stream, 200, r#"{"ok":true}"#, None);
+            return Some(vec![request]);
+        }
+        respond(
+            &mut stream,
+            400,
+            r#"{"ok":false,"error":"needs a http(s) url"}"#,
+            None,
+        );
+        return None;
+    }
+
+    respond(&mut stream, 404, r#"{"ok":false}"#, None);
     None
 }
 
-fn respond(stream: &mut TcpStream, status: u16, body: &str, cors: bool) {
+
+/// `{"url": "...", "referer": "...", "cookie": "..."}` — three flat strings, so a
+/// small reader avoids a JSON dependency in the UI crate.
+fn respond_preflight(stream: &mut TcpStream, origin: &str) {
+    let head = format!(
+        "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: {}\r\n\
+         Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n\
+         Access-Control-Allow-Headers: content-type, x-tree-client\r\n\
+         Access-Control-Max-Age: 600\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        origin
+    );
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.flush();
+}
+
+fn respond(stream: &mut TcpStream, status: u16, body: &str, origin: Option<&str>) {
     let reason = match status {
         200 => "OK",
         204 => "No Content",
+        400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         _ => "OK",
     };
@@ -88,104 +144,11 @@ fn respond(stream: &mut TcpStream, status: u16, body: &str, cors: bool) {
         reason,
         body.len()
     );
-    if cors {
-        head.push_str("Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET,POST,OPTIONS\r\nAccess-Control-Allow-Headers: *\r\n");
+    if let Some(origin) = origin.filter(|o| origin_allowed(o)) {
+        head.push_str(&format!("Access-Control-Allow-Origin: {}\r\n", origin));
     }
     head.push_str("\r\n");
     let _ = stream.write_all(head.as_bytes());
     let _ = stream.write_all(body.as_bytes());
     let _ = stream.flush();
-}
-
-/// Split `/add?url=…&cookie=…&referer=…&ua=…` into a URL plus request headers.
-fn parse_add(target: &str) -> (String, Vec<(String, String)>) {
-    let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
-    let mut url = String::new();
-    let mut headers = Vec::new();
-    for pair in query.split('&') {
-        let Some((key, value)) = pair.split_once('=') else {
-            continue;
-        };
-        let value = percent_decode(value);
-        if value.is_empty() {
-            continue;
-        }
-        match key {
-            "url" => url = value,
-            "cookie" => headers.push(("Cookie".to_string(), value)),
-            "referer" | "referrer" => headers.push(("Referer".to_string(), value)),
-            "ua" | "user_agent" => headers.push(("User-Agent".to_string(), value)),
-            _ => {}
-        }
-    }
-    (url, headers)
-}
-
-/// Only the escapes a browser actually produces in a URL.
-fn percent_decode(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match (bytes[i], bytes.get(i + 1), bytes.get(i + 2)) {
-            (b'%', Some(h), Some(l)) => {
-                let hex = |c: u8| match c {
-                    b'0'..=b'9' => Some(c - b'0'),
-                    b'a'..=b'f' => Some(c - b'a' + 10),
-                    b'A'..=b'F' => Some(c - b'A' + 10),
-                    _ => None,
-                };
-                if let (Some(hi), Some(lo)) = (hex(*h), hex(*l)) {
-                    out.push(hi * 16 + lo);
-                    i += 3;
-                    continue;
-                }
-                out.push(bytes[i]);
-                i += 1;
-            }
-            (b'+', _, _) => {
-                out.push(b' ');
-                i += 1;
-            }
-            (c, _, _) => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{parse_add, percent_decode};
-
-    #[test]
-    fn reads_headers_from_an_add_request() {
-        let (url, headers) = parse_add(
-            "/add?url=https%3A%2F%2Fexample.com%2Fa.zip&cookie=sid%3Dabc%3B%20t%3D1&referer=https%3A%2F%2Fexample.com%2F",
-        );
-        assert_eq!(url, "https://example.com/a.zip");
-        assert_eq!(headers.len(), 2);
-        assert_eq!(headers[0].0, "Cookie");
-        assert_eq!(headers[0].1, "sid=abc; t=1");
-        assert_eq!(headers[1].0, "Referer");
-    }
-
-    #[test]
-    fn a_plain_add_has_no_headers() {
-        let (url, headers) = parse_add("/add?url=https%3A%2F%2Fexample.com%2Ff.bin");
-        assert_eq!(url, "https://example.com/f.bin");
-        assert!(headers.is_empty());
-    }
-
-    #[test]
-    fn decodes_browser_escapes() {
-        assert_eq!(
-            percent_decode("https%3A%2F%2Fexample.com%2Fa%20b.zip"),
-            "https://example.com/a b.zip"
-        );
-        assert_eq!(percent_decode("https://x/y?q=1"), "https://x/y?q=1");
-        assert_eq!(percent_decode("a+b"), "a b");
-    }
 }
