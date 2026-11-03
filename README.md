@@ -1,13 +1,15 @@
 # Tree
 
 **A native Windows download manager in Rust.** Eight parallel connections per
-file, resumable, ten themes, video links through yt-dlp, and a single 1.6 MB
+file, resumable, ten themes, video links through yt-dlp, and a single 1.7 MB
 executable that needs no runtime, no installer framework and no web view.
 
-![Tree's main window](docs/screenshot.png)
+![Tree's main window](docs/screenshot-dark.png)
+
+*Dark theme. The same window in the light palette: [docs/screenshot-light.png](docs/screenshot-light.png).*
 
 ```
-1.6 MB exe   ·   no VC++ redist   ·   no WebView2   ·   no telemetry   ·   MIT
+1.7 MB exe   ·   no VC++ redist   ·   no WebView2   ·   no telemetry   ·   MIT
 ```
 
 ## Why another download manager
@@ -23,7 +25,7 @@ behaviour and accessibility for free instead of re-implementing them.
 
 | | Tree | Electron-based manager | Browser |
 |---|---|---|---|
-| Install size | **1.6 MB** | 80–150 MB | — |
+| Install size | **1.7 MB** | 80–150 MB | — |
 | RAM at idle | **~25 MB** | 150–300 MB | 300 MB+ |
 | Threads at idle | **6** | 20+ | 30+ |
 | Connections per file | **8 ranged** | 1–4 | 1 |
@@ -56,6 +58,21 @@ behaviour and accessibility for free instead of re-implementing them.
   [browser extension](https://github.com/fevnem/tree-extension) (context menu,
   popup, optional takeover of every browser download). Only one Tree ever runs:
   a second launch focuses the existing window.
+
+### The window
+
+* **Toolbar** — Add, Pause, Resume, Remove, Folder, Open. Each button greys out
+  when it cannot apply to the selection, so the toolbar states what is possible.
+* **Sidebar** — All / Downloading / Queued / Completed / Failed / Paused with live
+  counts; the selection filters the table while the counts stay global.
+* **Table** — a real `SysListView32` (sorting, keyboard, accessibility) with
+  owner-drawn rows: file-type badge, name, size, a progress bar with percentage,
+  speed, status and ETA.
+* **Detail pane** — the selected download, its URL, the failure reason if there is
+  one, and one cell per connection filled by that segment's own progress. A
+  multi-connection transfer is shown, not implied.
+* **Status strip** — total throughput, queue counts and a 60-second speed
+  sparkline. The selection follows the live transfer until you click a row.
 
 ## Install
 
@@ -124,6 +141,24 @@ crates/tree-win     shell: raw Win32 via the windows crate, no GUI framework
 Details: [docs/architecture.md](docs/architecture.md) ·
 [docs/ux.md](docs/ux.md) · [docs/build.md](docs/build.md)
 
+## Where it stands
+
+Honest comparison with the managers this one learned from. Tree is much smaller
+and much simpler; it does not try to be a BitTorrent client or a site ripper.
+
+| | Tree | Motrix | XDM | aria2 |
+|---|---|---|---|---|
+| Runtime | native Win32, 1.7 MB | Electron (~120 MB) | Java/JVM | CLI |
+| Parallel connections per file | 8 | up to 64 | up to 32 | `--split` |
+| Resume across restarts | yes | yes | yes | yes |
+| Per-connection progress UI | yes | yes | yes | no |
+| Browser integration | extension (loopback) | extension | extension | JSON-RPC |
+| Video/audio sites | via yt-dlp | torrents, no | HLS/DASH grabber | no |
+| Torrent / magnet | no | yes | no | yes |
+| Scheduler (time windows) | no | yes | yes | no |
+| Checksum verification | no | no | no | yes |
+| Install size | 1.7 MB | ~120 MB | ~40 MB | ~5 MB |
+
 ## Verified
 
 Engine, on a real HTTPS server (`cargo test -p tree-core`, 11 tests):
@@ -169,3 +204,20 @@ cargo test -p tree-core        # engine tests (needs network)
 ## Licence
 
 MIT.
+
+## Credits
+
+Written from scratch, but the design owes a lot to these projects — their source
+and docs were read before rebuilding the window and the engine:
+
+* **[Vise](https://github.com/juic3b0x/vise)** (MIT) — chunk-progress grids, speed
+  sampling with validity guards, adaptive split margins and alignment.
+* **[DownloadCraft](https://github.com/hungry-detective/downloadcraft)** (MIT) —
+  segmented download model and queue behaviour.
+* **[gosh-dl](https://github.com/goshitsarch-eng/gosh-dl)** (MIT) — structure for
+  a multi-protocol engine.
+* **[aria2](https://github.com/aria2/aria2)** — range semantics, `Retry-After`,
+  split heuristics (`--min-split-size`, `--max-connection-per-server`).
+* **[Motrix](https://github.com/agalwood/Motrix)** (MIT) and
+  **[XDM](https://github.com/subhra74/xdm)** — the interaction model: sidebar
+  categories, per-row progress, batch add, tray behaviour.

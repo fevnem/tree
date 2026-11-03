@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.0 — 2026-11-03
+
+The window is rebuilt around what the established managers do, after reading the
+source of Vise, DownloadCraft and gosh-dl and the docs of aria2, Motrix and XDM.
+
+* **Per-row progress bars** with percentage, speed and ETA in the table, plus a
+  file-type badge per row.
+* **Sidebar** with All / Downloading / Queued / Completed / Failed / Paused and
+  live counts; clicking filters the table.
+* **Detail pane** showing the file, its URL, the error if any, and a **per-
+  connection grid** — one cell per segment, so a multi-connection transfer is
+  visible instead of implied.
+* **Status strip** with total throughput, a 60-second **speed sparkline**, and
+  the queue summary.
+* **Labelled toolbar** (Add, Pause, Resume, Remove, Folder, Open) with hover and
+  disabled states driven by the selection.
+* **Selection follows the transfer** until you pick a row yourself.
+* Empty state with a call to action instead of a blank table.
+* Dark and light palettes rebuilt around the same painting code, so nothing is
+  half-themed (header, rows, chrome and the area below the last row).
+* Fixed: pure-black band below the last row, wrong COLORREF channel order in
+  status colours, `WM_MOUSELEAVE` silently defined as a catch-all match arm that
+  swallowed every later message, stale selection after a rebuild.
+
 ## 0.3.2 — 2026-11-02
 
 * **Fixed: no tray icon.** `load_icon` passed a dangling pointer as the resource
