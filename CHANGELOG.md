@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.5.0 — 2026-11-03
+
+Researched 120 download-manager repositories (616 swept) and closed the gaps the
+field considers basic.
+
+* **Adaptive segmentation.** Connections claim work instead of being handed a
+  fixed slice; a connection that runs dry steals half of the largest remaining
+  range, with Vise-style margins (1 MiB minimum piece, 256 KiB margin, 64 KiB
+  alignment, 64 segment cap). Verified on a deliberately lopsided link: a 300 MiB
+  transfer spread from 8 to **19 segments** and the finished file still hashed
+  byte-identical to the source.
+* **File types.** The sidebar gained a `FILE TYPES` section — All types, Video,
+  Music, Documents, Programs, Compressed, Other — with coloured dots and live
+  counts, filtering the table (XDM's model).
+* **Rows** are 52 px with pill-shaped status badges and 40 px type badges.
+* **Quiet hours (scheduler).** View ▸ Quiet hours, window editable in a dialog
+  (`02:00`/`0800`/`7` all parse). Transfers pause inside the window and the tasks
+  this feature paused resume after it — verified pausing at 6 s and finishing
+  after the window closed. A manual pause is never undone.
+* **Dialogs follow the palette**: owner-drawn buttons, themed labels and edits, so
+  the Add and Quiet-hours windows are no longer white boxes on a dark app.
+* **yt-dlp**: a complete transfer whose only complaint is `Unable to rename file`
+  (target already claimed) is now reported as done instead of failed.
+
 ## 0.4.0 — 2026-11-03
 
 The window is rebuilt around what the established managers do, after reading the

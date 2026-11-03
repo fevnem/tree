@@ -50,6 +50,9 @@ behaviour and accessibility for free instead of re-implementing them.
   SoundCloud, Twitch, …) is handed to the official `yt-dlp.exe`, with the same
   progress, pause and resume behaviour as a normal download. One click in
   **Tools** fetches the binary; no Python needed.
+* **Adaptive connections** — a connection that finishes early takes half of the
+  largest remaining range, so a lopsided link still saturates the pipe.
+* **Quiet hours** — a window where every transfer pauses and resumes afterwards.
 * **Ten themes** — Follow Windows, Light, Dark, Graphite, Midnight, Nord,
   Solarized, Sepia, Rosé, Forest. Dark palettes repaint the list, header,
   buttons, status bar and progress bar together, so nothing is left half-light.
@@ -149,13 +152,13 @@ and much simpler; it does not try to be a BitTorrent client or a site ripper.
 | | Tree | Motrix | XDM | aria2 |
 |---|---|---|---|---|
 | Runtime | native Win32, 1.7 MB | Electron (~120 MB) | Java/JVM | CLI |
-| Parallel connections per file | 8 | up to 64 | up to 32 | `--split` |
+| Parallel connections per file | 8 (adaptive) | up to 64 | up to 32 | `--split` |
 | Resume across restarts | yes | yes | yes | yes |
 | Per-connection progress UI | yes | yes | yes | no |
 | Browser integration | extension (loopback) | extension | extension | JSON-RPC |
 | Video/audio sites | via yt-dlp | torrents, no | HLS/DASH grabber | no |
 | Torrent / magnet | no | yes | no | yes |
-| Scheduler (time windows) | no | yes | yes | no |
+| Scheduler (time windows) | yes (quiet hours) | yes | yes | no |
 | Checksum verification | no | no | no | yes |
 | Install size | 1.7 MB | ~120 MB | ~40 MB | ~5 MB |
 

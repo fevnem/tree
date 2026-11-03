@@ -64,6 +64,33 @@ pub struct Run {
     pub total: u64,
     pub bounds: Vec<(u64, u64)>,
     pub seg_done: Vec<u64>,
+    /// Which connection owns each segment.
+    pub owner: Vec<usize>,
+}
+
+/// Splitting rules, adapted from Vise's adaptive chunker: never leave a victim
+/// with less than a piece plus a margin, and keep boundaries aligned so a later
+/// split cannot create slivers.
+const MIN_PIECE: u64 = 1 << 20;
+const STEAL_MARGIN: u64 = 256 << 10;
+const ALIGN: u64 = 64 << 10;
+const MAX_SEGMENTS: usize = 64;
+
+/// Midpoint of a remaining range, aligned, or `None` when it is too small to
+/// split without starving the victim.
+fn split_point(offset: u64, end: u64) -> Option<u64> {
+    if end == u64::MAX {
+        return None;
+    }
+    let left = (end + 1).saturating_sub(offset);
+    if left < 2 * MIN_PIECE + STEAL_MARGIN {
+        return None;
+    }
+    let mid = offset + left / 2;
+    let aligned = (mid / ALIGN) * ALIGN;
+    let low = offset + MIN_PIECE;
+    let high = (end + 1).saturating_sub(MIN_PIECE);
+    (low <= high).then(|| aligned.clamp(low, high)).filter(|p| *p > offset && *p <= end)
 }
 
 pub struct TaskRun {
@@ -92,6 +119,7 @@ impl TaskRun {
                 total: t.total,
                 bounds: t.segments.iter().map(|s| (s.start, s.end)).collect(),
                 seg_done: t.segments.iter().map(|s| s.done).collect(),
+                owner: (0..t.segments.len()).collect(),
             }),
         }
     }
@@ -107,6 +135,62 @@ impl TaskRun {
     pub fn offset(&self, i: usize) -> u64 {
         let g = lock(&self.inner);
         g.bounds[i].0 + g.seg_done[i]
+    }
+
+    pub fn end_of(&self, i: usize) -> u64 {
+        lock(&self.inner).bounds[i].1
+    }
+
+    /// Mark an open-ended segment finished (unknown-length transfers).
+    pub fn close(&self, i: usize) {
+        let mut g = lock(&self.inner);
+        let done = g.bounds[i].0 + g.seg_done[i];
+        g.bounds[i].1 = done.saturating_sub(1);
+    }
+
+    /// The next segment this connection should work on: its own unfinished
+    /// range, or, when it is out of work, half of the largest remaining range.
+    pub fn claim(&self, worker: usize) -> Option<usize> {
+        let mut g = lock(&self.inner);
+        for i in 0..g.bounds.len() {
+            if g.owner[i] != worker {
+                continue;
+            }
+            let (start, end) = g.bounds[i];
+            if end == u64::MAX {
+                return Some(i); // open-ended stream: this connection owns it
+            }
+            if start + g.seg_done[i] <= end {
+                return Some(i);
+            }
+        }
+        if g.bounds.len() >= MAX_SEGMENTS {
+            return None;
+        }
+        let mut victim: Option<(usize, u64)> = None;
+        for i in 0..g.bounds.len() {
+            if g.owner[i] == worker {
+                continue;
+            }
+            let start = g.bounds[i].0 + g.seg_done[i];
+            let end = g.bounds[i].1;
+            if split_point(start, end).is_none() {
+                continue;
+            }
+            let left = (end + 1).saturating_sub(start);
+            if victim.is_none_or(|(_, l)| left > l) {
+                victim = Some((i, left));
+            }
+        }
+        let (victim, _) = victim?;
+        let (vstart, vend) = g.bounds[victim];
+        let offset = vstart + g.seg_done[victim];
+        let split = split_point(offset, vend)?;
+        g.bounds[victim].1 = split - 1;
+        g.bounds.push((split, vend));
+        g.seg_done.push(0);
+        g.owner.push(worker);
+        Some(g.bounds.len() - 1)
     }
 
     pub fn add(&self, i: usize, n: u64) {
@@ -599,6 +683,7 @@ async fn run_task(
             g.total = probed.total;
             g.bounds = segments.iter().map(|s| (s.start, s.end)).collect();
             g.seg_done = vec![0; segments.len()];
+            g.owner = (0..segments.len()).collect();
         }
         {
             let mut v = lock(tasks);
@@ -687,6 +772,22 @@ fn stopped(run: &TaskRun) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splits_big_ranges_only() {
+        assert!(split_point(0, 100).is_none());
+        // 2 MiB cannot yield two pieces of 1 MiB + margin each.
+        assert!(split_point(0, 2 << 20).is_none());
+        assert!(split_point(0, 4 << 20).is_some());
+        let p = split_point(0, 40 << 20).expect("40 MiB splits");
+        assert_eq!(p % ALIGN, 0, "boundaries are aligned");
+        assert!(p >= MIN_PIECE && p <= (40 << 20) + 1 - MIN_PIECE);
+    }
+
+    #[test]
+    fn never_splits_an_open_ended_stream() {
+        assert!(split_point(0, u64::MAX).is_none());
+    }
 
     fn sample_task() -> Task {
         Task {

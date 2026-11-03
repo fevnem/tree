@@ -78,3 +78,4 @@ pub fn place(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
 /// Class names used across the shell.
 pub const MAIN_CLASS: PCWSTR = w!("TreeMainWindow");
 pub const ADD_CLASS: PCWSTR = w!("TreeAddDialog");
+pub const QUIET_CLASS: PCWSTR = w!("TreeQuietDialog");

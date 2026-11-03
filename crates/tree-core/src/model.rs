@@ -131,6 +131,14 @@ pub struct Settings {
     pub sort_col: i32,
     pub sort_desc: bool,
     pub col_widths: Vec<i32>,
+    /// Quiet hours: pause every transfer inside this window and resume after it.
+    #[serde(default)]
+    pub quiet_enabled: bool,
+    /// Minutes since local midnight.
+    #[serde(default = "default_quiet_start")]
+    pub quiet_start: u16,
+    #[serde(default = "default_quiet_end")]
+    pub quiet_end: u16,
     /// Window geometry in 96-dpi units; 0 means "let Windows decide".
     pub win_w: i32,
     pub win_h: i32,
@@ -153,6 +161,9 @@ impl Default for Settings {
             sort_col: 0,
             sort_desc: false,
             col_widths: vec![320, 88, 150, 96, 76, 124],
+            quiet_enabled: false,
+            quiet_start: default_quiet_start(),
+            quiet_end: default_quiet_end(),
             win_w: 0,
             win_h: 0,
             win_x: 0,
@@ -186,5 +197,28 @@ impl Settings {
         self.simultaneous = self.simultaneous.clamp(1, 5);
         self.win_w = self.win_w.clamp(0, 4000);
         self.win_h = self.win_h.clamp(0, 3000);
+    }
+}
+
+fn default_quiet_start() -> u16 {
+    2 * 60
+}
+
+fn default_quiet_end() -> u16 {
+    8 * 60
+}
+
+impl Settings {
+    /// Is `minute` (minutes since midnight) inside the quiet window?
+    /// A window that wraps midnight is supported.
+    pub fn quiet_at(&self, minute: u16) -> bool {
+        if !self.quiet_enabled || self.quiet_start == self.quiet_end {
+            return false;
+        }
+        if self.quiet_start < self.quiet_end {
+            minute >= self.quiet_start && minute < self.quiet_end
+        } else {
+            minute >= self.quiet_start || minute < self.quiet_end
+        }
     }
 }

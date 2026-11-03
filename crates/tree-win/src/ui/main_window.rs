@@ -68,8 +68,21 @@ impl App {
         }
         self.counts = counts;
         crate::dbg(&format!("counts: {:?}", counts));
+        let mut cat_counts = [0usize; 7];
+        cat_counts[0] = tasks.len();
+        for task in &tasks {
+            for (i, cat) in crate::ui::shell::Category::ALL.iter().enumerate().skip(1) {
+                if cat.matches(&task.name) {
+                    cat_counts[i] += 1;
+                    break;
+                }
+            }
+        }
+        self.cat_counts = cat_counts;
         let filter = self.filter;
         tasks.retain(|t| filter.matches(t.status));
+        let category = self.category;
+        tasks.retain(|t| category.matches(&t.name));
         let needle = crate::win32::wide::get_text(self.ui.filter).trim()
         .to_lowercase();
         if !needle.is_empty() {

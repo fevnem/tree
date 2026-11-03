@@ -31,6 +31,13 @@ pub const WM_TRAY: u32 = WM_APP + 1;
 /// would silently become a catch-all match arm.
 pub const WM_MOUSELEAVE: u32 = 0x02A3;
 
+/// Local time as minutes since midnight.
+pub fn local_minute() -> u16 {
+    // GetLocalTime returns the SYSTEMTIME directly in this crate version.
+    let st = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    (st.wHour as u16) * 60 + st.wMinute as u16
+}
+
 fn invalidate(hwnd: HWND) {
     unsafe {
         let _ = InvalidateRect(Some(hwnd), None, false);
@@ -42,6 +49,7 @@ fn invalidate(hwnd: HWND) {
 pub enum Hot {
     Tool(usize),
     Nav(usize),
+    Cat(usize),
     Empty,
 }
 pub const WM_TOOLS_DONE: u32 = WM_APP + 2;
@@ -77,11 +85,17 @@ pub struct App {
     pub filter: crate::ui::shell::Filter,
     pub hover: Option<Hot>,
     pub counts: [usize; 6],
+    /// Per-category counts for the FILE TYPES section.
+    pub cat_counts: [usize; 7],
+    pub category: crate::ui::shell::Category,
     /// Total throughput samples for the status sparkline.
     pub speed_hist: std::collections::VecDeque<u64>,
     pub tracking: bool,
     /// Keep the selection on the active transfer until the user picks a row.
     pub follow: bool,
+    /// Tasks the quiet-hours window paused, so it only resumes its own work.
+    pub paused_by_quiet: Vec<u64>,
+    pub quiet_dlg: HWND,
     /// Loopback bridge for the browser extension, drained on the UI timer.
     pub bridge: Option<std::sync::mpsc::Receiver<Vec<String>>>,
 }
@@ -101,6 +115,7 @@ impl App {
             settings.speed_limit,
             settings.watch_clipboard,
             settings.minimize_to_tray,
+            settings.quiet_enabled,
             &settings.theme,
         );
         Box::new(App {
@@ -129,9 +144,13 @@ impl App {
             filter: crate::ui::shell::Filter::All,
             hover: None,
             counts: [0; 6],
+            cat_counts: [0; 7],
+            category: crate::ui::shell::Category::All,
             speed_hist: std::collections::VecDeque::new(),
             tracking: false,
             follow: true,
+            paused_by_quiet: Vec::new(),
+            quiet_dlg: HWND::default(),
             bridge: bindings::start(bindings::PORT),
         })
     }
@@ -152,6 +171,12 @@ impl App {
                 window::ADD_CLASS,
                 Some(self.icon),
                 Some(add_dialog::wndproc),
+                self.palette.background,
+            );
+            window::register_class(
+                window::QUIET_CLASS,
+                Some(self.icon),
+                Some(crate::ui::quiet::wndproc),
                 self.palette.background,
             );
             let hwnd = window::create(
@@ -257,6 +282,14 @@ impl App {
         }
     }
 
+    pub fn set_category(&mut self, category: crate::ui::shell::Category) {
+        if self.category != category {
+            self.category = category;
+            self.rows.clear();
+            self.refresh();
+        }
+    }
+
     pub fn set_filter(&mut self, filter: crate::ui::shell::Filter) {
         if self.filter != filter {
             self.filter = filter;
@@ -354,6 +387,13 @@ impl App {
                 self.save_settings();
             }
             menu::ID_YTDLP => self.install_ytdlp(),
+            menu::ID_QUIET => {
+                self.settings.quiet_enabled = !self.settings.quiet_enabled;
+                self.save_settings();
+            }
+            menu::ID_QUIET_SET => {
+                crate::ui::quiet::open(self);
+            }
             _ => {
                 let themes = menu::ID_THEME_BASE..menu::ID_THEME_BASE + theme::THEMES.len();
                 if id > menu::ID_CONNS_BASE && id <= menu::ID_CONNS_BASE + 16 {
@@ -458,6 +498,7 @@ impl App {
             self.settings.speed_limit,
             self.settings.watch_clipboard,
             self.settings.minimize_to_tray,
+            self.settings.quiet_enabled,
             &self.settings.theme,
         );
         if let Some(hmenu) = self.hmenu {
@@ -562,12 +603,55 @@ impl App {
     pub fn on_timer(&mut self) {
         self.ticks = self.ticks.wrapping_add(1);
         self.drain_bridge();
+        self.apply_quiet_hours();
         self.refresh();
         if self.ticks.is_multiple_of(4) {
             self.poll_clipboard();
         }
         if self.ticks.is_multiple_of(8) {
             self.update_tray();
+        }
+    }
+
+    /// Pause everything inside the quiet window and resume what we paused once
+    /// the window closes. Only tasks this feature paused are resumed, so a
+    /// manual pause is never undone.
+    /// Re-run the window check right after the times change.
+    pub fn apply_quiet_hours_now(&mut self) {
+        self.paused_by_quiet.clear();
+        self.apply_quiet_hours();
+    }
+
+    fn apply_quiet_hours(&mut self) {
+        if !self.settings.quiet_enabled {
+            if !self.paused_by_quiet.is_empty() {
+                let ids = std::mem::take(&mut self.paused_by_quiet);
+                for id in ids {
+                    self.engine.resume(id);
+                }
+            }
+            return;
+        }
+        let minute = local_minute();
+        if self.settings.quiet_at(minute) {
+            let running: Vec<u64> = self
+                .engine
+                .snapshot()
+                .into_iter()
+                .filter(|t| t.status == Status::Running || t.status == Status::Queued)
+                .map(|t| t.id)
+                .collect();
+            for id in running {
+                if !self.paused_by_quiet.contains(&id) {
+                    self.paused_by_quiet.push(id);
+                    self.engine.pause(id);
+                }
+            }
+        } else if !self.paused_by_quiet.is_empty() {
+            let ids = std::mem::take(&mut self.paused_by_quiet);
+            for id in ids {
+                self.engine.resume(id);
+            }
         }
     }
 
@@ -650,6 +734,16 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Dialog controls: transparent background, palette text, palette brush.
+    pub fn on_ctlcolor_any(&self, wp: WPARAM) -> LRESULT {
+        let hdc = HDC(wp.0 as *mut core::ffi::c_void);
+        unsafe {
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, self.palette.text);
+        }
+        LRESULT(self.palette.background.0 as isize)
     }
 
     pub fn on_erase(&self, wp: WPARAM) -> LRESULT {

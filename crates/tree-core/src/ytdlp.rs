@@ -218,6 +218,17 @@ pub fn download(
         return Err(DlError::Cancelled);
     }
     if !status.success() {
+        // yt-dlp exits 1 when its final rename loses a race with another process
+        // holding the same file name, even though every byte arrived. Treat that
+        // as success when the transfer was complete and the file is on disk.
+        let done = ctl.done.load(Ordering::Relaxed);
+        let total = ctl.total.load(Ordering::Relaxed);
+        let recovered = complete_despite_error(&stderr, done, total)
+            .then(|| final_path.clone().filter(|p| p.exists()))
+            .flatten();
+        if let Some(path) = recovered {
+            return Ok(path);
+        }
         let message = stderr
             .lines()
             .rev()
@@ -282,6 +293,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rename_collision_after_completion_is_success() {
+        let stderr = "ERROR: Unable to rename file: [Errno 2] big.mp4.part -> big.mp4";
+        assert!(complete_despite_error(stderr, 100, 100));
+    }
+
+    #[test]
+    fn rename_collision_before_completion_is_failure() {
+        let stderr = "ERROR: Unable to rename file: [Errno 2] big.mp4.part -> big.mp4";
+        assert!(!complete_despite_error(stderr, 40, 100));
+    }
+
+    #[test]
+    fn unrelated_errors_stay_errors() {
+        assert!(!complete_despite_error("ERROR: Video unavailable", 100, 100));
+        assert!(!complete_despite_error("", 100, 100));
+    }
+
+    #[test]
     fn recognises_media_hosts() {
         assert!(is_media_url("https://www.youtube.com/watch?v=abc"));
         assert!(is_media_url("https://youtu.be/abc"));
@@ -299,4 +328,12 @@ mod tests {
         assert_eq!(parse_progress("TREE|NA|NA|NA"), Some((0, 0, 0)));
         assert_eq!(parse_progress("[download] 12% of 3MiB"), None);
     }
+}
+
+/// yt-dlp reports failure when its final rename collides with another process,
+/// even after the whole file arrived. The bytes are what matter, so treat a
+/// complete transfer whose only complaint is the rename as done.
+fn complete_despite_error(stderr: &str, done: u64, total: u64) -> bool {
+    let rename_conflict = stderr.contains("Unable to rename file");
+    rename_conflict && total > 0 && done >= total
 }

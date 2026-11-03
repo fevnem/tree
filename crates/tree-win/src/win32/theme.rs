@@ -264,3 +264,13 @@ impl Palette {
     }
 }
 
+
+/// Blend `a` toward `b` by `t` (0 = a, 1 = b). Handy for hover/pressed states.
+pub fn lighten(a: u32, b: u32, t: f32) -> u32 {
+    let channel = |shift: u32| {
+        let x = ((a >> shift) & 0xFF) as f32;
+        let y = ((b >> shift) & 0xFF) as f32;
+        ((x + (y - x) * t).round() as u32) & 0xFF
+    };
+    channel(0) | (channel(8) << 8) | (channel(16) << 16)
+}

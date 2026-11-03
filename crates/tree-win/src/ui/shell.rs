@@ -26,7 +26,7 @@ pub const TOOLBAR_H: i32 = 46;
 pub const NAV_W: i32 = 190;
 pub const DETAIL_H: i32 = 116;
 pub const STATUS_H: i32 = 28;
-pub const ROW_H: i32 = 44;
+pub const ROW_H: i32 = 52;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Filter {
@@ -84,6 +84,75 @@ impl Filter {
 
     pub fn index(self) -> usize {
         Filter::ALL.iter().position(|f| *f == self).unwrap_or(0)
+    }
+}
+
+/// File-type groups, the second sidebar section every mature manager has.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Category {
+    All,
+    Video,
+    Music,
+    Documents,
+    Programs,
+    Compressed,
+    Other,
+}
+
+impl Category {
+    pub const ALL: [Category; 7] = [
+        Category::All,
+        Category::Video,
+        Category::Music,
+        Category::Documents,
+        Category::Programs,
+        Category::Compressed,
+        Category::Other,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Category::All => "All types",
+            Category::Video => "Video",
+            Category::Music => "Music",
+            Category::Documents => "Documents",
+            Category::Programs => "Programs",
+            Category::Compressed => "Compressed",
+            Category::Other => "Other",
+        }
+    }
+
+    pub fn dot(self) -> u32 {
+        match self {
+            Category::All => rgb(120, 140, 200),
+            Category::Video => rgb(168, 92, 216),
+            Category::Music => rgb(226, 176, 62),
+            Category::Documents => rgb(74, 200, 128),
+            Category::Programs => rgb(96, 170, 240),
+            Category::Compressed => rgb(226, 126, 74),
+            Category::Other => rgb(130, 136, 148),
+        }
+    }
+
+    pub fn matches(self, name: &str) -> bool {
+        let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        let group = match ext.as_str() {
+            "mp4" | "mkv" | "avi" | "mov" | "webm" | "m4v" | "wmv" | "flv" | "ts" => Category::Video,
+            "mp3" | "flac" | "m4a" | "ogg" | "opus" | "wav" | "aac" | "wma" => Category::Music,
+            "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "epub"
+            | "md" | "csv" | "rtf" => Category::Documents,
+            "exe" | "msi" | "msix" | "bat" | "cmd" | "ps1" | "apk" | "dmg" | "deb" | "rpm" => {
+                Category::Programs
+            }
+            "zip" | "rar" | "7z" | "tar" | "gz" | "xz" | "bz2" | "iso" | "img" | "cab" => {
+                Category::Compressed
+            }
+            _ => Category::Other,
+        };
+        match self {
+            Category::All => true,
+            other => other == group,
+        }
     }
 }
 
@@ -178,6 +247,17 @@ fn nav_rect(app: &App, l: &Layout, index: usize) -> RECT {
     }
 }
 
+fn cat_rect(app: &App, l: &Layout, index: usize) -> RECT {
+    let top = l.nav.top + app.s(34) + Filter::ALL.len() as i32 * app.s(30) + app.s(34)
+        + index as i32 * app.s(30);
+    RECT {
+        left: l.nav.left + app.s(8),
+        top,
+        right: l.nav.right - app.s(8),
+        bottom: top + app.s(28),
+    }
+}
+
 pub fn hit(app: &App, x: i32, y: i32) -> Option<Hot> {
     let l = layout(app);
     let inside = |r: &RECT| x >= r.left && x < r.right && y >= r.top && y < r.bottom;
@@ -189,6 +269,11 @@ pub fn hit(app: &App, x: i32, y: i32) -> Option<Hot> {
     for i in 0..Filter::ALL.len() {
         if inside(&nav_rect(app, &l, i)) {
             return Some(Hot::Nav(i));
+        }
+    }
+    for i in 0..Category::ALL.len() {
+        if inside(&cat_rect(app, &l, i)) {
+            return Some(Hot::Cat(i));
         }
     }
     if app.tasks.is_empty() && inside(&empty_button(app, &l)) {
@@ -213,6 +298,10 @@ pub fn click(app: &mut App, x: i32, y: i32) -> bool {
         }
         Some(Hot::Nav(i)) => {
             app.set_filter(Filter::ALL[i]);
+            true
+        }
+        Some(Hot::Cat(i)) => {
+            app.set_category(Category::ALL[i]);
             true
         }
         Some(Hot::Empty) => {
@@ -339,6 +428,7 @@ pub fn paint(app: &App, hdc: HDC) {
         fill(mem, &rect(0, 0, w, h), colors.bg);
         paint_toolbar(app, mem, &l);
         paint_nav(app, mem, &l);
+        paint_categories(app, mem, &l);
         if l.details.bottom > l.details.top {
             paint_details(app, mem, &l);
         }
@@ -462,6 +552,44 @@ fn paint_nav(app: &App, hdc: HDC, l: &Layout) {
         let count = app.counts[i];
         let num = rect(r.right - app.s(38), r.top, r.right - app.s(12), r.bottom);
         let count_color = if app.filter == f {
+            c.accent
+        } else if count == 0 {
+            mix(c.dim, c.bg, 0.45)
+        } else {
+            c.dim
+        };
+        text(hdc, &count.to_string(), num, count_color, text_flags(DT_RIGHT), HGDIOBJ(app.font.0));
+    }
+}
+
+fn paint_categories(app: &App, hdc: HDC, l: &Layout) {
+    let c = app.palette.colors;
+    let top = l.nav.top + app.s(34) + Filter::ALL.len() as i32 * app.s(30) + app.s(14);
+    let title = rect(l.nav.left + app.s(16), top, l.nav.right, top + app.s(20));
+    text(hdc, "FILE TYPES", title, mix(c.dim, c.bg, 0.15), text_flags(DT_LEFT), HGDIOBJ(app.font.0));
+
+    for i in 0..Category::ALL.len() {
+        let cat = Category::ALL[i];
+        let r = cat_rect(app, l, i);
+        if app.category == cat {
+            rounded(hdc, r, app.s(7), mix(c.bg, c.accent, 0.20));
+        } else if app.hover == Some(Hot::Cat(i)) {
+            rounded(hdc, r, app.s(7), mix(c.bg, c.text, 0.06));
+        }
+        let dot_size = app.s(8);
+        let dot = rect(
+            r.left + app.s(14),
+            r.top + (r.bottom - r.top - dot_size) / 2,
+            r.left + app.s(14) + dot_size,
+            r.top + (r.bottom - r.top - dot_size) / 2 + dot_size,
+        );
+        rounded(hdc, dot, dot_size, cat.dot());
+        let color = if app.category == cat { c.text } else { mix(c.text, c.bg, 0.25) };
+        let label = rect(dot.right + app.s(10), r.top, r.right - app.s(40), r.bottom);
+        text(hdc, cat.label(), label, color, text_flags(DT_LEFT), HGDIOBJ(app.font.0));
+        let count = app.cat_counts[i];
+        let num = rect(r.right - app.s(38), r.top, r.right - app.s(12), r.bottom);
+        let count_color = if app.category == cat {
             c.accent
         } else if count == 0 {
             mix(c.dim, c.bg, 0.45)
@@ -770,7 +898,13 @@ pub fn draw_row(app: &App, hdc: HDC, rc: RECT, row: usize, selected: bool) {
 
     // Status.
     let st_r = rect(rc.left + edges[5] + pad, rc.top, rc.right - pad, rc.bottom);
-    text(hdc, task.status.word(), st_r, status_color(app, task.status), text_flags(DT_LEFT), font);
+    let pill_text = task.status.word();
+    let tint = status_color(app, task.status);
+    let pill_w = (pill_text.chars().count() as i32 * app.s(7) + app.s(20)).min(st_r.right - st_r.left);
+    let pill_h = app.s(22);
+    let pill = rect(st_r.left, rc.top + (height - pill_h) / 2, st_r.left + pill_w, rc.top + (height + pill_h) / 2);
+    rounded(hdc, pill, app.s(11), mix(c.bg, tint, 0.18));
+    text(hdc, pill_text, pill, tint, text_flags(DT_LEFT) | DT_CENTER, font);
 
     line(hdc, rc.left, rc.bottom - 1, rc.right, rc.bottom - 1, 1, mix(c.bg, c.text, 0.06));
 }

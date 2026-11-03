@@ -60,47 +60,55 @@ enum Step {
     Paused,
 }
 
-pub async fn run_segment(run: Arc<TaskRun>, idx: usize) -> Result<(), DlError> {
-    let (start, end) = run.bounds(idx);
-    if start > end {
-        return Ok(());
-    }
-    let mut off = run.offset(idx);
-    if off > end {
-        return Ok(());
-    }
+pub async fn run_segment(run: Arc<TaskRun>, worker: usize) -> Result<(), DlError> {
     let file = io::open_part(&run.part())?;
-    let mut attempt = 0u32;
 
     loop {
         if run.stopped() != RUN {
             return Ok(());
         }
-        match fetch(&run, idx, &file, &mut off, start, end).await {
-            Ok(Step::Done) | Ok(Step::Paused) => return Ok(()),
-            Err(e) => {
-                if run.stopped() != RUN {
-                    return Ok(());
+        // Work is claimed, not assigned: a connection that runs dry takes half
+        // of the largest remaining range instead of going idle.
+        let Some(seg) = run.claim(worker) else {
+            return Ok(());
+        };
+        let mut attempt = 0u32;
+        loop {
+            if run.stopped() != RUN {
+                return Ok(());
+            }
+            match fetch(&run, seg, &file).await {
+                Ok(Step::Done) => {
+                    // An open-ended transfer has no end marker: close it so this
+                    // connection is not handed the same stream again.
+                    if run.end_of(seg) == u64::MAX {
+                        run.close(seg);
+                    }
+                    break; // piece finished, look for more work
                 }
-                attempt += 1;
-                if !e.retryable() || attempt > MAX_ATTEMPTS {
-                    return Err(e);
+                Ok(Step::Paused) => return Ok(()),
+                Err(e) => {
+                    if run.stopped() != RUN {
+                        return Ok(());
+                    }
+                    attempt += 1;
+                    if !e.retryable() || attempt > MAX_ATTEMPTS {
+                        return Err(e);
+                    }
+                    let backoff = (300u64 << attempt.min(4)).min(8_000);
+                    tokio::time::sleep(Duration::from_millis(backoff)).await;
                 }
-                let backoff = (300u64 << attempt.min(4)).min(8_000);
-                tokio::time::sleep(Duration::from_millis(backoff)).await;
             }
         }
     }
 }
 
-async fn fetch(
-    run: &Arc<TaskRun>,
-    idx: usize,
-    file: &std::fs::File,
-    off: &mut u64,
-    start: u64,
-    end: u64,
-) -> Result<Step, DlError> {
+async fn fetch(run: &Arc<TaskRun>, seg: usize, file: &std::fs::File) -> Result<Step, DlError> {
+    let mut off = run.offset(seg);
+    let end = run.end_of(seg);
+    if off > end {
+        return Ok(Step::Done);
+    }
     let range = if end == u64::MAX {
         format!("bytes={}-", off)
     } else {
@@ -115,7 +123,7 @@ async fn fetch(
         .await?;
 
     let code = resp.status().as_u16();
-    if code == 200 && *off > start {
+    if code == 200 && off > run.bounds(seg).0 {
         // The server silently ignored our range: continuing would corrupt the file.
         return Err(DlError::RangeUnsupported);
     }
@@ -124,7 +132,7 @@ async fn fetch(
         // writing it at our offset would shift the whole file.
         if let Some(cr) = resp.headers().get(reqwest::header::CONTENT_RANGE) {
             match range_start(cr.to_str().unwrap_or("")) {
-                Some(from) if from == *off => {}
+                Some(from) if from == off => {}
                 Some(_) | None => return Err(DlError::RangeUnsupported),
             }
         }
@@ -151,27 +159,33 @@ async fn fetch(
             return Ok(Step::Paused);
         }
         let chunk = item?;
+        // The tail may have been handed to another connection while we streamed.
+        let end = run.end_of(seg);
+        if end != u64::MAX && off > end {
+            return Ok(Step::Done);
+        }
         let take = if end == u64::MAX {
             chunk.len() as u64
         } else {
-            (end - *off + 1).min(chunk.len() as u64)
+            (end - off + 1).min(chunk.len() as u64)
         };
         if take == 0 {
             break;
         }
-        io::write_at(file, &chunk[..take as usize], *off)?;
-        *off += take;
-        run.add(idx, take);
-        if end != u64::MAX && *off > end {
+        io::write_at(file, &chunk[..take as usize], off)?;
+        off += take;
+        run.add(seg, take);
+        if end != u64::MAX && off > end {
             return Ok(Step::Done);
         }
         run.bucket.take(take).await;
     }
 
-    if end == u64::MAX {
-        return Ok(Step::Done); // unknown length: end of stream is the end
+    let end = run.end_of(seg);
+    if end == u64::MAX || off > end {
+        return Ok(Step::Done);
     }
-    // Closed before the range was complete: the outer loop re-requests the rest.
+    // Closed before the range was complete: the caller retries the remainder.
     Err(DlError::Network("connection closed early".into()))
 }
 

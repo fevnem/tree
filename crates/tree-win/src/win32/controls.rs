@@ -2,11 +2,11 @@
 
 use super::wide;
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, WPARAM};
 use windows::Win32::Graphics::Gdi::HFONT;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, SendMessageW, ES_AUTOHSCROLL, ES_MULTILINE, ES_AUTOVSCROLL,
-    WS_BORDER, WS_CHILD, WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE,
+    WS_BORDER, WS_CHILD, WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE, BS_OWNERDRAW,
 };
 
 pub const ID_FILTER: i32 = 1006;
@@ -43,6 +43,80 @@ pub fn button(parent: HWND, id: i32, text: &str, x: i32, y: i32, w: i32, h: i32)
             None,
         )
         .unwrap_or_default()
+    }
+}
+
+/// Switch a button to owner-draw so a dark palette applies: stock buttons ignore
+/// `SetWindowTheme`, and a white button on a dark dialog reads as broken.
+pub fn set_owner_draw(button: HWND, enabled: bool) {
+    unsafe {
+        let style = windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(
+            button,
+            windows::Win32::UI::WindowsAndMessaging::GWL_STYLE,
+        );
+        let base = (style as u32) & !(windows::Win32::UI::WindowsAndMessaging::BS_TYPEMASK as u32);
+        let style = if enabled {
+            base | BS_OWNERDRAW as u32
+        } else {
+            base | windows::Win32::UI::WindowsAndMessaging::BS_PUSHBUTTON as u32
+        };
+        windows::Win32::UI::WindowsAndMessaging::SetWindowLongPtrW(
+            button,
+            windows::Win32::UI::WindowsAndMessaging::GWL_STYLE,
+            style as isize,
+        );
+        let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(button), None, true);
+    }
+}
+
+/// Paint an owner-drawn dialog button in the palette.
+pub fn paint_owner_button(
+    hdc: windows::Win32::Graphics::Gdi::HDC,
+    rect: &windows::Win32::Foundation::RECT,
+    text: &str,
+    pressed: bool,
+    primary: bool,
+    colors: crate::win32::theme::Colors,
+) {
+    use windows::Win32::Graphics::Gdi::{
+        CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, RoundRect, SelectObject,
+        SetBkMode, SetTextColor, DRAW_TEXT_FORMAT, DT_CENTER, DT_SINGLELINE, DT_VCENTER,
+        HGDIOBJ, PS_NULL, TRANSPARENT,
+    };
+    let fill = if primary {
+        if pressed {
+            colors.accent
+        } else {
+            colors.accent
+        }
+    } else if pressed {
+        crate::win32::theme::lighten(colors.bg, colors.text, 0.18)
+    } else {
+        crate::win32::theme::lighten(colors.bg, colors.text, 0.10)
+    };
+    let text_color = if primary { 0x00FF_FFFF } else { colors.text };
+    unsafe {
+        let brush = CreateSolidBrush(COLORREF(fill));
+        let pen = CreatePen(PS_NULL, 0, COLORREF(0));
+        let old_b = SelectObject(hdc, HGDIOBJ(brush.0));
+        let old_p = SelectObject(hdc, HGDIOBJ(pen.0));
+        let _ = RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, 8, 8);
+        SelectObject(hdc, old_b);
+        SelectObject(hdc, old_p);
+        let _ = DeleteObject(HGDIOBJ(brush.0));
+        let _ = DeleteObject(HGDIOBJ(pen.0));
+
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, COLORREF(text_color));
+        let mut wide: Vec<u16> = text.encode_utf16().collect();
+        let mut rc = *rect;
+        let _ = DrawTextW(
+            hdc,
+            &mut wide,
+            &mut rc,
+            DRAW_TEXT_FORMAT(DT_CENTER.0 | DT_SINGLELINE.0 | DT_VCENTER.0),
+        );
+        let _ = FillRect;
     }
 }
 

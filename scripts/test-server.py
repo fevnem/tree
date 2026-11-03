@@ -16,6 +16,10 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 SIZE = (int(sys.argv[2]) if len(sys.argv) > 2 else 24) * 1024 * 1024
 # Optional throttle in MiB/s so a local test can be observed in progress.
 RATE = (int(sys.argv[3]) if len(sys.argv) > 3 else 0) * 1024 * 1024
+# Optional slow zone: ranges starting below this offset are throttled to 1/8,
+# which makes one connection lag so adaptive stealing can be observed.
+import os
+SLOW_ZONE = int(os.environ.get("SLOW_ZONE_MB", "0")) * 1024 * 1024
 BLOB = bytes((i * 37 + 11) & 0xFF for i in range(1 << 20)) * (SIZE >> 20)
 
 
@@ -48,6 +52,7 @@ class Handler(BaseHTTPRequestHandler):
         self._headers(200, SIZE)
 
     def do_GET(self):
+        start = 0
         rng = self.headers.get("Range")
         if rng:
             m = re.match(r"bytes=(\d+)-(\d*)$", rng)
@@ -65,12 +70,15 @@ class Handler(BaseHTTPRequestHandler):
             body = BLOB
             self._headers(200, SIZE)
         try:
-            if RATE:
+            rate = RATE
+            if SLOW_ZONE and start < SLOW_ZONE:
+                rate = max(1, RATE // 8)
+            if rate:
                 deadline = time.monotonic()
                 step = 64 * 1024
                 for i in range(0, len(body), step):
                     self.wfile.write(body[i : i + step])
-                    deadline += step / RATE
+                    deadline += step / rate
                     delay = deadline - time.monotonic()
                     if delay > 0:
                         time.sleep(delay)

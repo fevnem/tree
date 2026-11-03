@@ -27,6 +27,8 @@ pub const ID_WATCH: usize = 1107;
 pub const ID_TRAY: usize = 1108;
 pub const ID_SHOW: usize = 1109;
 pub const ID_YTDLP: usize = 1110;
+pub const ID_QUIET: usize = 1111;
+pub const ID_QUIET_SET: usize = 1112;
 
 pub const ID_CONNS_BASE: usize = 1200;
 pub const ID_SPEED_BASE: usize = 1300;
@@ -61,7 +63,14 @@ fn check(on: bool) -> MENU_ITEM_FLAGS {
 }
 
 /// Build the whole bar for the current settings.
-pub fn build(conns: usize, speed_limit: u64, watch: bool, tray: bool, theme_name: &str) -> Option<HMENU> {
+pub fn build(
+    conns: usize,
+    speed_limit: u64,
+    watch: bool,
+    tray: bool,
+    quiet: bool,
+    theme_name: &str,
+) -> Option<HMENU> {
     unsafe {
         let bar = CreateMenu().ok()?;
 
@@ -124,6 +133,8 @@ pub fn build(conns: usize, speed_limit: u64, watch: bool, tray: bool, theme_name
         separator(view);
         item(view, check(watch), ID_WATCH, "Watch &clipboard for links");
         item(view, check(tray), ID_TRAY, "Close to the &tray");
+        item(view, check(quiet), ID_QUIET, "&Quiet hours");
+        item(view, MF_STRING, ID_QUIET_SET, "Quiet hours &window…");
         submenu(bar, view, "&View");
 
         let tools = CreatePopupMenu().ok()?;
