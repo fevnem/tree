@@ -152,7 +152,7 @@ impl Default for Settings {
             theme: "system".into(),
             sort_col: 0,
             sort_desc: false,
-            col_widths: vec![340, 90, 80, 110, 110, 80],
+            col_widths: vec![320, 88, 150, 96, 76, 124],
             win_w: 0,
             win_h: 0,
             win_x: 0,

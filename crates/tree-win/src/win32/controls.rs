@@ -1,24 +1,16 @@
-//! Stock controls: buttons, labels, edits, progress bar, status bar.
+//! Stock controls: buttons, labels and edits.
 
 use super::wide;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::Graphics::Gdi::HFONT;
-use windows::Win32::UI::Controls::{PBM_SETPOS, PBM_SETRANGE32, PBM_SETSTATE, PBST_ERROR, PBST_NORMAL, PBST_PAUSED};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, SendMessageW, ES_AUTOHSCROLL, ES_MULTILINE, ES_AUTOVSCROLL,
     WS_BORDER, WS_CHILD, WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE,
 };
 
-pub const ID_ADD: i32 = 1001;
-pub const ID_PAUSE: i32 = 1002;
-pub const ID_RESUME: i32 = 1003;
-pub const ID_REMOVE: i32 = 1004;
-pub const ID_FOLDER: i32 = 1005;
 pub const ID_FILTER: i32 = 1006;
 pub const ID_LIST: i32 = 1007;
-pub const ID_PROGRESS: i32 = 1008;
-pub const ID_STATUS: i32 = 1009;
 pub const ID_URL: i32 = 1010;
 pub const ID_DIR: i32 = 1011;
 pub const ID_BROWSE: i32 = 1012;
@@ -26,6 +18,33 @@ pub const ID_OK: i32 = 1013;
 pub const ID_CANCEL: i32 = 1014;
 pub const ID_LABEL_URL: i32 = 1015;
 pub const ID_LABEL_DIR: i32 = 1016;
+
+/// A stock push button — used by the Add dialog, where native is the point.
+pub fn button(parent: HWND, id: i32, text: &str, x: i32, y: i32, w: i32, h: i32) -> HWND {
+    let t = wide::wide(text);
+    unsafe {
+        CreateWindowExW(
+            windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
+            w!("BUTTON"),
+            wide::pcw(&t),
+            windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(
+                WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0
+                    | windows::Win32::UI::WindowsAndMessaging::BS_PUSHBUTTON as u32,
+            ),
+            x,
+            y,
+            w,
+            h,
+            Some(parent),
+            Some(windows::Win32::UI::WindowsAndMessaging::HMENU(
+                id as usize as *mut core::ffi::c_void,
+            )),
+            Some(super::window::instance()),
+            None,
+        )
+        .unwrap_or_default()
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 fn child(
@@ -59,21 +78,6 @@ fn child(
     }
 }
 
-pub fn button(parent: HWND, id: i32, text: &str, x: i32, y: i32, w: i32, h: i32) -> HWND {
-    let t = wide::wide(text);
-    child(
-        w!("BUTTON"),
-        wide::pcw(&t),
-        WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | windows::Win32::UI::WindowsAndMessaging::BS_PUSHBUTTON as u32,
-        0,
-        parent,
-        id,
-        x,
-        y,
-        w,
-        h,
-    )
-}
 
 pub fn default_button(parent: HWND, id: i32, text: &str, x: i32, y: i32, w: i32, h: i32) -> HWND {
     let t = wide::wide(text);
@@ -131,35 +135,7 @@ pub fn edit(parent: HWND, id: i32, multiline: bool, x: i32, y: i32, w: i32, h: i
     )
 }
 
-pub fn progress(parent: HWND, id: i32, x: i32, y: i32, w: i32, h: i32) -> HWND {
-    child(
-        w!("msctls_progress32"),
-        PCWSTR::null(),
-        WS_CHILD.0 | WS_VISIBLE.0,
-        0,
-        parent,
-        id,
-        x,
-        y,
-        w,
-        h,
-    )
-}
 
-pub fn statusbar(parent: HWND, id: i32) -> HWND {
-    child(
-        windows::Win32::UI::Controls::STATUSCLASSNAMEW,
-        PCWSTR::null(),
-        (WS_CHILD | WS_VISIBLE).0,
-        0,
-        parent,
-        id,
-        0,
-        0,
-        0,
-        0,
-    )
-}
 
 pub fn set_font(hwnd: HWND, font: HFONT) {
     unsafe {
@@ -172,90 +148,9 @@ pub fn set_font(hwnd: HWND, font: HFONT) {
     }
 }
 
-/// 0..=1000 so the bar moves smoothly instead of in whole percents.
-pub fn progress_set(bar: HWND, permille: u16, paused: bool, error: bool) {
-    unsafe {
-        SendMessageW(bar, PBM_SETPOS, Some(WPARAM(permille as usize)), Some(LPARAM(0)));
-        let state = if error {
-            PBST_ERROR
-        } else if paused {
-            PBST_PAUSED
-        } else {
-            PBST_NORMAL
-        };
-        SendMessageW(bar, PBM_SETSTATE, Some(WPARAM(state as usize)), Some(LPARAM(0)));
-    }
-}
-
-pub fn progress_range(bar: HWND, max: i32) {
-    unsafe {
-        SendMessageW(bar, PBM_SETRANGE32, Some(WPARAM(0)), Some(LPARAM(max as isize)));
-    }
-}
-
-pub fn status_parts(sb: HWND, widths: &[i32]) {
-    unsafe {
-        SendMessageW(
-            sb,
-            windows::Win32::UI::Controls::SB_SETPARTS,
-            Some(WPARAM(widths.len())),
-            Some(LPARAM(widths.as_ptr() as isize)),
-        );
-    }
-}
 
 
-/// Status text with explicit flags: `SBT_OWNERDRAW` hands painting to us.
-pub fn status_text_raw(sb: HWND, part: usize, flags: usize, ptr: *const u16) {
-    unsafe {
-        SendMessageW(
-            sb,
-            windows::Win32::UI::Controls::SB_SETTEXTW,
-            Some(WPARAM(flags)),
-            Some(LPARAM(ptr as isize)),
-        );
-        let _ = part;
-    }
-}
 
-/// Switch a button between the stock look and our own painting.
-pub fn set_owner_draw(hwnd: HWND, on: bool) {
-    unsafe {
-        let style =
-            windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(
-                hwnd,
-                windows::Win32::UI::WindowsAndMessaging::GWL_STYLE,
-            ) as u32;
-        let base = style & !0xF; // BS_TYPEMASK
-        let kind = if on {
-            windows::Win32::UI::WindowsAndMessaging::BS_OWNERDRAW as u32
-        } else {
-            windows::Win32::UI::WindowsAndMessaging::BS_PUSHBUTTON as u32
-        };
-        windows::Win32::UI::WindowsAndMessaging::SetWindowLongPtrW(
-            hwnd,
-            windows::Win32::UI::WindowsAndMessaging::GWL_STYLE,
-            (base | kind) as isize,
-        );
-        let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, true);
-    }
-}
 
-/// Progress bars keep the system trough unless told otherwise.
-pub fn progress_colors(bar: HWND, background: u32, fill: u32) {
-    use windows::Win32::UI::Controls::{PBM_SETBARCOLOR, PBM_SETBKCOLOR};
-    unsafe {
-        SendMessageW(
-            bar,
-            PBM_SETBKCOLOR,
-            Some(WPARAM(0)),
-            Some(LPARAM(background as isize)),
-        );
-        SendMessageW(
-            bar,
-            PBM_SETBARCOLOR,
-            Some(WPARAM(0)),
-            Some(LPARAM(fill as isize)),
-        );
-    }
-}
+
+

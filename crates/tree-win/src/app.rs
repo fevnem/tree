@@ -5,15 +5,15 @@
 use crate::bindings;
 use crate::paths;
 use crate::single;
-use crate::ui::{add_dialog, context_menu, custom_draw, format, strings};
+use crate::ui::{add_dialog, context_menu, format, shell, strings};
 use crate::win32::{controls, listview, menu, theme, wide, window};
 use std::sync::atomic::Ordering;
 use tree_core::{Engine, Settings, Status, Task};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::{
-    DeleteObject, FillRect, InvalidateRect, SetBkMode, SetBkColor, SetTextColor, UpdateWindow, HDC,
-    HGDIOBJ, HFONT, TRANSPARENT,
+    BeginPaint, DeleteObject, EndPaint, FillRect, InvalidateRect, PAINTSTRUCT, SetBkColor, SetBkMode,
+    SetTextColor, UpdateWindow, HDC, HGDIOBJ, HFONT, TRANSPARENT,
 };
 use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
@@ -23,20 +23,34 @@ use windows::Win32::UI::Shell::{
     NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, ShellExecuteW, Shell_NotifyIconW,
     TaskbarList, TBPF_ERROR, TBPF_NORMAL, TBPF_NOPROGRESS, TBPF_PAUSED, HDROP,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 pub const WM_TRAY: u32 = WM_APP + 1;
+/// winuser.h value; the crate does not export it, and an undefined name here
+/// would silently become a catch-all match arm.
+pub const WM_MOUSELEAVE: u32 = 0x02A3;
+
+fn invalidate(hwnd: HWND) {
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// What the pointer is over in our own chrome.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Hot {
+    Tool(usize),
+    Nav(usize),
+    Empty,
+}
 pub const WM_TOOLS_DONE: u32 = WM_APP + 2;
 pub const TIMER_UI: usize = 1;
 pub const TRAY_ID: u32 = 1;
 
 pub struct Ui {
     pub list: HWND,
-    pub status: HWND,
-    pub progress: HWND,
     pub filter: HWND,
-    pub buttons: Vec<HWND>,
 }
 
 pub struct App {
@@ -59,6 +73,15 @@ pub struct App {
     pub status_buf: [[u16; 512]; 3],
     pub ticks: u32,
     pub add_dlg: HWND,
+    /// Sidebar selection and hover, both owned by `ui::shell`.
+    pub filter: crate::ui::shell::Filter,
+    pub hover: Option<Hot>,
+    pub counts: [usize; 6],
+    /// Total throughput samples for the status sparkline.
+    pub speed_hist: std::collections::VecDeque<u64>,
+    pub tracking: bool,
+    /// Keep the selection on the active transfer until the user picks a row.
+    pub follow: bool,
     /// Loopback bridge for the browser extension, drained on the UI timer.
     pub bridge: Option<std::sync::mpsc::Receiver<Vec<String>>>,
 }
@@ -85,10 +108,7 @@ impl App {
             engine,
             ui: Ui {
                 list: HWND::default(),
-                status: HWND::default(),
-                progress: HWND::default(),
                 filter: HWND::default(),
-                buttons: Vec::new(),
             },
             font: theme::message_font(),
             small_icon: load_icon(true),
@@ -106,6 +126,12 @@ impl App {
             status_buf: [[0; 512]; 3],
             ticks: 0,
             add_dlg: HWND::default(),
+            filter: crate::ui::shell::Filter::All,
+            hover: None,
+            counts: [0; 6],
+            speed_hist: std::collections::VecDeque::new(),
+            tracking: false,
+            follow: true,
             bridge: bindings::start(bindings::PORT),
         })
     }
@@ -185,38 +211,15 @@ impl App {
             let width = self.settings.col_widths.get(i).copied().unwrap_or(120);
             listview::add_column(list, i as i32, title, self.s(width));
         }
-        let status = controls::statusbar(h, controls::ID_STATUS);
-        let progress = controls::progress(h, controls::ID_PROGRESS, 0, 0, 10, 10);
-        controls::progress_range(progress, 1000);
         let filter = controls::edit(h, controls::ID_FILTER, false, 0, 0, 10, 10);
         cue_banner(filter, strings::FILTER_HINT);
 
-        let mut buttons = Vec::new();
-        for (id, label) in [
-            (controls::ID_ADD, strings::BTN_ADD),
-            (controls::ID_PAUSE, strings::BTN_PAUSE),
-            (controls::ID_RESUME, strings::BTN_RESUME),
-            (controls::ID_REMOVE, strings::BTN_REMOVE),
-            (controls::ID_FOLDER, strings::BTN_FOLDER),
-        ] {
-            buttons.push(controls::button(h, id, label, 0, 0, 10, 10));
-        }
-
         let font = self.font;
-        for child in [list, status, progress, filter] {
+        for child in [list, filter] {
             controls::set_font(child, font);
         }
-        for b in &buttons {
-            controls::set_font(*b, font);
-        }
 
-        self.ui = Ui {
-            list,
-            status,
-            progress,
-            filter,
-            buttons,
-        };
+        self.ui = Ui { list, filter };
         self.apply_theme();
     }
 
@@ -225,27 +228,8 @@ impl App {
     pub fn apply_theme(&self) {
         let colors = self.palette.colors;
         theme::listview(self.ui.list, colors);
-        theme::control(self.ui.status, colors.dark);
         theme::control(self.ui.filter, colors.dark);
-        if colors.dark {
-            // Themed progress bars ignore their colour messages.
-            theme::plain(self.ui.progress);
-        } else {
-            theme::control(self.ui.progress, false);
-        }
-        controls::progress_colors(
-            self.ui.progress,
-            if colors.dark { colors.bg } else { 0x00FF_FFFF },
-            colors.accent,
-        );
-        for button in &self.ui.buttons {
-            theme::control(*button, colors.dark);
-            controls::set_owner_draw(*button, colors.dark);
-        }
-        unsafe {
-            let _ = InvalidateRect(Some(self.ui.list), None, true);
-            let _ = InvalidateRect(Some(self.ui.status), None, true);
-        }
+        invalidate(self.hwnd);
     }
 
     pub fn header_hwnd(&self) -> HWND {
@@ -260,39 +244,45 @@ impl App {
         HWND(result.0 as *mut core::ffi::c_void)
     }
 
-    /// One status-bar part. The text lives in a stable buffer so the owner-draw
-    /// pointer stays valid for the life of the window.
-    pub fn set_status(&mut self, part: usize, value: &str) {
-        if part >= 3 {
-            return;
-        }
-        wide::copy_into(&mut self.status_buf[part], value);
-        let flags = if self.palette.colors.dark {
-            part | 0x1000 // SBT_OWNERDRAW
-        } else {
-            part
-        };
-        let ptr = self.status_buf[part].as_ptr();
-        controls::status_text_raw(self.ui.status, part, flags, ptr);
-    }
-
-    /// WM_DRAWITEM for our buttons and the owner-drawn status bar.
-    pub fn on_draw_item(&self, lp: LPARAM) {
+    /// `WM_DRAWITEM` from the owner-drawn table.
+    pub fn on_draw_item(&self, lp: LPARAM) -> bool {
         unsafe {
             let dis = &*(lp.0 as *const windows::Win32::UI::Controls::DRAWITEMSTRUCT);
-            if dis.CtlID == controls::ID_STATUS as u32 {
-                if !self.palette.colors.dark {
-                    return;
-                }
-                let value = if dis.itemData != 0 {
-                    read_wide(dis.itemData as *const u16)
-                } else {
-                    String::new()
-                };
-                custom_draw::status_part(self, &value, dis.hDC, &dis.rcItem);
-            } else if self.palette.colors.dark {
-                custom_draw::button(self, dis.hwndItem, dis.hDC, &dis.rcItem, dis.itemState.0);
+            if dis.CtlID != controls::ID_LIST as u32 {
+                return false;
             }
+            let selected = dis.itemState.0 & 1 != 0;
+            shell::draw_row(self, dis.hDC, dis.rcItem, dis.itemID as usize, selected);
+            true
+        }
+    }
+
+    pub fn set_filter(&mut self, filter: crate::ui::shell::Filter) {
+        if self.filter != filter {
+            self.filter = filter;
+            self.rows.clear();
+            self.refresh();
+        }
+    }
+
+    pub fn selected_task(&self) -> Option<&Task> {
+        let ids = self.selected_ids();
+        self.tasks.iter().find(|t| ids.contains(&t.id))
+    }
+
+    pub fn track_leave(&mut self) {
+        if self.tracking {
+            return;
+        }
+        self.tracking = true;
+        let mut event = TRACKMOUSEEVENT {
+            cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+            dwFlags: TME_LEAVE,
+            hwndTrack: self.hwnd,
+            dwHoverTime: 0,
+        };
+        unsafe {
+            let _ = TrackMouseEvent(&mut event);
         }
     }
 
@@ -384,6 +374,7 @@ impl App {
     /// Add links and put the selection on the newest one, so the user sees what
     /// just happened.
     pub fn add_many(&mut self, urls: &[String]) {
+        self.follow = true;
         let before = self
             .engine
             .snapshot()
@@ -493,12 +484,32 @@ impl App {
     // ---- notifications --------------------------------------------------
 
     pub fn on_notify(&mut self, lp: LPARAM) -> Option<isize> {
-        if let Some(result) = custom_draw::on_notify(self, lp) {
-            return Some(result);
-        }
         unsafe {
             let hdr = &*(lp.0 as *const NMHDR);
-            if hdr.code == windows::Win32::UI::Controls::LVN_COLUMNCLICK {
+            if hdr.code == windows::Win32::UI::Controls::NM_CUSTOMDRAW
+                && hdr.hwndFrom == self.ui.list
+            {
+                let draw = &*(lp.0 as *const windows::Win32::UI::Controls::NMCUSTOMDRAW);
+                if draw.dwDrawStage == windows::Win32::UI::Controls::CDDS_POSTPAINT {
+                    shell::paint_list_gap(self, draw.hdc);
+                }
+                return Some(windows::Win32::UI::Controls::CDRF_DODEFAULT as isize);
+            }
+            // The header is stock, and stock headers do not follow a dark palette.
+            if hdr.code == windows::Win32::UI::Controls::NM_CUSTOMDRAW
+                && hdr.hwndFrom == self.header_hwnd()
+            {
+                let draw = &*(lp.0 as *const windows::Win32::UI::Controls::NMCUSTOMDRAW);
+                if draw.dwDrawStage == windows::Win32::UI::Controls::CDDS_PREPAINT {
+                    shell::paint_header(self, draw.hdc);
+                    return Some(windows::Win32::UI::Controls::CDRF_SKIPDEFAULT as isize);
+                }
+                return Some(windows::Win32::UI::Controls::CDRF_DODEFAULT as isize);
+            }
+            if hdr.code == windows::Win32::UI::Controls::NM_CLICK && hdr.hwndFrom == self.ui.list {
+                // The user is driving now; stop moving the selection for them.
+                self.follow = false;
+            } else if hdr.code == windows::Win32::UI::Controls::LVN_COLUMNCLICK {
                 let info = &*(lp.0 as *const windows::Win32::UI::Controls::NMLISTVIEW);
                 let col = info.iSubItem;
                 if self.settings.sort_col == col {
@@ -919,6 +930,50 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
 
     match msg {
         WM_CREATE => LRESULT(0),
+        WM_PAINT => {
+            let mut ps = PAINTSTRUCT::default();
+            let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
+            shell::paint(app, hdc);
+            unsafe {
+                let _ = EndPaint(hwnd, &ps);
+            }
+            LRESULT(0)
+        }
+        WM_MEASUREITEM => {
+            let mis = unsafe { &mut *(lp.0 as *mut windows::Win32::UI::Controls::MEASUREITEMSTRUCT) };
+            if mis.CtlID == controls::ID_LIST as u32 {
+                mis.itemHeight = app.s(shell::ROW_H) as u32;
+            }
+            LRESULT(1)
+        }
+        WM_MOUSEMOVE => {
+            let x = (lp.0 & 0xFFFF) as i16 as i32;
+            let y = ((lp.0 >> 16) & 0xFFFF) as i16 as i32;
+            let hot = shell::hit(app, x, y);
+            if hot != app.hover {
+                app.hover = hot;
+                invalidate(hwnd);
+            }
+            if hot.is_some() {
+                app.track_leave();
+            }
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            app.tracking = false;
+            if app.hover.take().is_some() {
+                invalidate(hwnd);
+            }
+            LRESULT(0)
+        }
+        WM_LBUTTONDOWN => {
+            let x = (lp.0 & 0xFFFF) as i16 as i32;
+            let y = ((lp.0 >> 16) & 0xFFFF) as i16 as i32;
+            if shell::click(app, x, y) {
+                invalidate(hwnd);
+            }
+            LRESULT(0)
+        }
         WM_SIZE => {
             app.layout();
             LRESULT(0)
@@ -949,10 +1004,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             LRESULT(0)
         }
         WM_NOTIFY => LRESULT(app.on_notify(lp).unwrap_or(0)),
-        WM_DRAWITEM => {
-            app.on_draw_item(lp);
-            LRESULT(1)
-        }
+        WM_DRAWITEM => LRESULT(app.on_draw_item(lp) as isize),
         WM_DROPFILES => {
             app.on_drop(wp);
             LRESULT(0)
@@ -1048,21 +1100,3 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
 }
 
 
-/// Read a NUL-terminated wide string that lives in one of our own buffers.
-fn read_wide(mut ptr: *const u16) -> String {
-    if ptr.is_null() {
-        return String::new();
-    }
-    let mut out = Vec::new();
-    unsafe {
-        for _ in 0..512 {
-            let ch = *ptr;
-            if ch == 0 {
-                break;
-            }
-            out.push(ch);
-            ptr = ptr.add(1);
-        }
-    }
-    String::from_utf16_lossy(&out)
-}

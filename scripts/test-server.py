@@ -25,12 +25,21 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
+    def _name(self):
+        # /f/<name> serves the same blob under any filename, so demos and
+        # screenshots can show realistic names without a different fixture.
+        if self.path.startswith("/f/"):
+            name = self.path[3:].split("?")[0]
+            if name and "/" not in name:
+                return name
+        return "tree-test.bin"
+
     def _headers(self, code, length, extra=None):
         self.send_response(code)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(length))
-        self.send_header("Content-Disposition", 'attachment; filename="tree-test.bin"')
+        self.send_header("Content-Disposition", 'attachment; filename="%s"' % self._name())
         for key, value in (extra or {}).items():
             self.send_header(key, value)
         self.end_headers()

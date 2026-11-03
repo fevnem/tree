@@ -4,72 +4,38 @@
 //! are updated in place, which keeps an idle Tree at ~0 % CPU.
 
 use super::format;
-use super::strings;
 use crate::app::App;
-use crate::win32::{controls, listview, window};
+use crate::win32::{listview, window};
+use crate::ui::shell;
 use std::cmp::Ordering;
 use tree_core::{Status, Task};
 use windows::Win32::Foundation::{HWND, LPARAM};
-use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
-use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_SIZE};
+use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
 
 impl App {
     pub fn layout(&mut self) {
-        let rect = window::client_rect(self.hwnd);
-        let width = (rect.right - rect.left).max(1);
-        let height = (rect.bottom - rect.top).max(1);
+        let l = shell::layout(self);
         let pad = self.s(10);
-        let gap = self.s(6);
-        let btn_h = self.s(30);
-        let bar_h = self.s(16);
 
-        let mut x = pad;
-        let bw = self.s(92);
-        for button in &self.ui.buttons {
-            window::place(*button, x, pad, bw, btn_h);
-            x += bw + gap;
-        }
-
-        let filter_w = self.s(220);
-        let filter_h = self.s(24);
+        let filter_w = self.s(240);
+        let filter_h = self.s(26);
         window::place(
             self.ui.filter,
-            width - pad - filter_w,
-            pad + (btn_h - filter_h) / 2,
+            l.toolbar.right - pad - filter_w,
+            l.toolbar.top + (l.toolbar.bottom - l.toolbar.top - filter_h) / 2,
             filter_w,
             filter_h,
         );
 
-        // Status bar positions itself from the parent size.
-        unsafe {
-            SendMessageW(
-                self.ui.status,
-                WM_SIZE,
-                Some(windows::Win32::Foundation::WPARAM(0)),
-                Some(LPARAM(0)),
-            );
-        }
-        let mut sb = windows::Win32::Foundation::RECT::default();
-        unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(
-                self.ui.status,
-                &mut sb,
-            );
-        }
-        let sb_h = (sb.bottom - sb.top).max(self.s(22));
+        let inset = self.s(8);
+        let list_x = l.list.left + inset;
+        let list_y = l.list.top + inset;
+        let list_w = ((l.list.right - l.list.left) - inset * 2).max(self.s(200));
+        let list_h = ((l.list.bottom - l.list.top) - inset).max(self.s(80));
+        window::place(self.ui.list, list_x, list_y, list_w, list_h);
 
-        let progress_y = height - sb_h - bar_h - self.s(8);
-        window::place(self.ui.progress, pad, progress_y, width - pad * 2, bar_h);
-
-        let list_y = pad + btn_h + self.s(10);
-        let list_h = (progress_y - self.s(8) - list_y).max(self.s(80));
-        window::place(self.ui.list, pad, list_y, width - pad * 2, list_h);
-
-        let parts = [width * 42 / 100, width * 78 / 100, -1];
-        controls::status_parts(self.ui.status, &parts);
-
-        // Fill the empty space to the right of ETA by widening the Name column,
-        // instead of leaving a phantom seventh column.
+        // The Name column takes whatever the other five do not need, so the
+        // table always fills the pane instead of leaving a phantom column.
         let others: i32 = (1..6)
             .map(|i| unsafe {
                 SendMessageW(
@@ -81,13 +47,29 @@ impl App {
                 .0 as i32
             })
             .sum();
-        let name_width = (width - pad * 2 - others - self.s(4)).max(self.s(220));
+        let name_width = (list_w - others - 4).max(self.s(240));
         listview::set_column_width(self.ui.list, 0, name_width);
     }
 
     pub fn refresh(&mut self) {
         let was_empty = self.tasks.is_empty();
         let mut tasks: Vec<Task> = self.engine.snapshot();
+
+        let mut counts = [0usize; 6];
+        counts[0] = tasks.len();
+        for task in &tasks {
+            match task.status {
+                Status::Running => counts[1] += 1,
+                Status::Queued => counts[2] += 1,
+                Status::Done => counts[3] += 1,
+                Status::Failed => counts[4] += 1,
+                Status::Paused => counts[5] += 1,
+            }
+        }
+        self.counts = counts;
+        crate::dbg(&format!("counts: {:?}", counts));
+        let filter = self.filter;
+        tasks.retain(|t| filter.matches(t.status));
         let needle = crate::win32::wide::get_text(self.ui.filter).trim()
         .to_lowercase();
         if !needle.is_empty() {
@@ -119,6 +101,14 @@ impl App {
                 listview::insert_row(list, row as i32, task.id, &cells(task));
             }
             self.rows = ids;
+            if !tasks.is_empty() && self.selected_ids().is_empty() {
+                listview::focus_row(list, 0);
+            }
+            crate::dbg(&format!(
+                "refresh: rows={} selected={:?}",
+                self.rows.len(),
+                self.selected_ids()
+            ));
             // keep the user's selection across a rebuild
             for (row, id) in self.rows.iter().enumerate() {
                 if selected.contains(id) {
@@ -135,6 +125,33 @@ impl App {
         }
 
         self.tasks = tasks;
+
+        // Follow the live transfer until the user chooses a row themselves: a
+        // task is queued for a moment before it starts, so this cannot be a
+        // once-per-rebuild decision.
+        if self.follow {
+            let selected = self.selected_ids();
+            let running = self
+                .tasks
+                .iter()
+                .position(|t| t.status == Status::Running)
+                .filter(|i| !selected.contains(&self.tasks[*i].id));
+            if let Some(index) = running {
+                listview::focus_row(self.ui.list, index as i32);
+            }
+        }
+
+        let show = !self.tasks.is_empty();
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
+                self.ui.list,
+                if show {
+                    windows::Win32::UI::WindowsAndMessaging::SW_SHOW
+                } else {
+                    windows::Win32::UI::WindowsAndMessaging::SW_HIDE
+                },
+            );
+        }
         if was_empty != self.tasks.is_empty() {
             self.layout();
         }
@@ -142,104 +159,20 @@ impl App {
     }
 
     pub fn update_chrome(&mut self) {
-        let (done, total, running) = self.totals();
         let speed: f64 = self
             .tasks
             .iter()
             .filter(|t| t.status == Status::Running)
             .map(|t| t.speed)
             .sum();
-        let queued = self
-            .tasks
-            .iter()
-            .filter(|t| t.status == Status::Queued)
-            .count();
-        let finished = self.tasks.iter().filter(|t| t.status == Status::Done).count();
-
-        let paused = self
-            .tasks
-            .iter()
-            .filter(|t| t.status == Status::Paused)
-            .count();
-        let failed = self
-            .tasks
-            .iter()
-            .filter(|t| t.status == Status::Failed)
-            .count();
-        let summary = if self.tasks.is_empty() {
-            strings::NO_TASKS.to_string()
-        } else {
-            let mut s = format!("{} active", running);
-            if speed >= 1.0 {
-                s.push_str(&format!(" · {}", format::speed(speed)));
-            }
-            if queued > 0 {
-                s.push_str(&format!(" · {} queued", queued));
-            }
-            if paused > 0 {
-                s.push_str(&format!(" · {} paused", paused));
-            }
-            if failed > 0 {
-                s.push_str(&format!(" · {} failed", failed));
-            }
-            if finished > 0 {
-                s.push_str(&format!(" · {} done", finished));
-            }
-            s
-        };
-        let summary_for_status = summary.clone();
-        self.set_status(0, &summary_for_status);
-
-        let selected = self.selected_ids();
-        let detail = match self.tasks.iter().find(|t| selected.contains(&t.id)) {
-            None => strings::EMPTY_SELECTION.to_string(),
-            Some(task) => detail_line(task),
-        };
-        self.set_status(1, &detail);
-        let free = self.free_space();
-        self.set_status(2, &free);
-
-        let (permille, paused, error) = match self.tasks.iter().find(|t| selected.contains(&t.id)) {
-            Some(task) => (
-                (task.fraction().unwrap_or(0.0) * 1000.0) as u16,
-                task.status == Status::Paused,
-                task.status == Status::Failed,
-            ),
-            None => (
-                if total > 0 {
-                    (done as f64 * 1000.0 / total as f64) as u16
-                } else {
-                    0
-                },
-                false,
-                false,
-            ),
-        };
-        controls::progress_set(self.ui.progress, permille, paused, error);
-
-        let any_running = self
-            .tasks
-            .iter()
-            .filter(|t| selected.contains(&t.id))
-            .any(|t| matches!(t.status, Status::Running | Status::Queued));
-        let any_paused = self
-            .tasks
-            .iter()
-            .filter(|t| selected.contains(&t.id))
-            .any(|t| matches!(t.status, Status::Paused | Status::Failed));
-        unsafe {
-            for (i, button) in self.ui.buttons.iter().enumerate() {
-                let enabled = match i {
-                    1 => any_running,
-                    2 => any_paused,
-                    3 => !selected.is_empty(),
-                    4 => !selected.is_empty(),
-                    _ => true,
-                };
-                let _ = EnableWindow(*button, enabled);
-            }
+        self.speed_hist.push_back(speed as u64);
+        while self.speed_hist.len() > 60 {
+            self.speed_hist.pop_front();
         }
-        self.update_taskbar();
+        // One repaint of the chrome per tick; the table repaints itself.
+        unsafe {
+            let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(self.hwnd), None, false);
+        }
     }
 
     pub fn selected_ids(&self) -> Vec<u64> {
@@ -265,34 +198,6 @@ impl App {
     }
 }
 
-/// One short sentence about the selected row. The table already carries size,
-/// speed and ETA, so this stays inside its status-bar part and adds meaning
-/// instead of repeating numbers.
-fn detail_line(task: &Task) -> String {
-    match task.status {
-        Status::Done => format!("{} — Completed", task.name),
-        Status::Failed => format!(
-            "{} — {}",
-            task.name,
-            task.error.clone().unwrap_or_else(|| "Failed".into())
-        ),
-        Status::Queued => format!("{} — Queued", task.name),
-        Status::Paused => format!(
-            "{} — Paused at {} · {} of {}",
-            task.name,
-            format::percent(task),
-            format::size(task.done),
-            format::size(task.total)
-        ),
-        Status::Running => format!(
-            "{} — {} · {} · {} left",
-            task.name,
-            format::percent(task),
-            format::speed(task.speed),
-            format::eta(task.eta_secs())
-        ),
-    }
-}
 
 fn cells(task: &Task) -> Vec<String> {
     vec![

@@ -61,7 +61,7 @@ pub fn palette_for(theme: &str) -> Colors {
             bg: rgb(28, 28, 28),
             surface: rgb(32, 32, 32),
             text: rgb(230, 230, 230),
-            dim: rgb(154, 154, 154),
+            dim: rgb(172, 174, 180),
             accent: rgb(76, 141, 255),
             dark: true,
         },
@@ -204,12 +204,6 @@ pub fn control(hwnd: HWND, dark: bool) {
     }
 }
 
-/// Turn off visual styles for one control so its own colour messages apply.
-pub fn plain(hwnd: HWND) {
-    unsafe {
-        let _ = SetWindowTheme(hwnd, w!(""), w!(""));
-    }
-}
 
 /// A ListView keeps its own colours; theming alone does not paint its body on
 /// every Windows build, so set them explicitly too.

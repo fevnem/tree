@@ -3,11 +3,6 @@
 pub const APP_NAME: &str = "Tree";
 pub const WINDOW_TITLE: &str = "Tree";
 
-pub const BTN_ADD: &str = "Add";
-pub const BTN_PAUSE: &str = "Pause";
-pub const BTN_RESUME: &str = "Resume";
-pub const BTN_REMOVE: &str = "Remove";
-pub const BTN_FOLDER: &str = "Folder";
 
 pub const FILTER_HINT: &str = "Filter";
 pub const COLUMNS: [&str; 6] = ["Name", "Size", "Progress", "Speed", "Status", "ETA"];
@@ -20,8 +15,6 @@ pub const ADD_OK: &str = "&Add";
 pub const ADD_CANCEL: &str = "Cancel";
 pub const PICK_FOLDER: &str = "Choose where Tree saves downloads";
 
-pub const NO_TASKS: &str = "Drop a link here, or press Ctrl+N to add one";
-pub const EMPTY_SELECTION: &str = "No download selected";
 
 pub const TRAY_IDLE: &str = "Tree · idle";
 

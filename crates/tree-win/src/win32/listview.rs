@@ -17,13 +17,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub fn create(parent: HWND, id: i32, x: i32, y: i32, w: i32, h: i32) -> HWND {
     unsafe {
         let lv = CreateWindowExW(
-            windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(
-                windows::Win32::UI::WindowsAndMessaging::WS_EX_CLIENTEDGE.0,
-            ),
+            windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
             w!("SysListView32"),
             PCWSTR::null(),
             windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(
-                WS_CHILD.0 | WS_VISIBLE.0 | LVS_REPORT | LVS_SHOWSELALWAYS,
+                WS_CHILD.0 | WS_VISIBLE.0 | LVS_REPORT | LVS_SHOWSELALWAYS
+                    | windows::Win32::UI::Controls::LVS_OWNERDRAWFIXED,
             ),
             x,
             y,
@@ -138,7 +137,28 @@ pub fn selected_rows(lv: HWND) -> Vec<i32> {
     out
 }
 
+/// Drop every selection. `LVM_SETITEMSTATE` with index -1 applies to all items;
+/// setting a new item selected does not reliably clear the old one.
+pub fn clear_selection(lv: HWND) {
+    unsafe {
+        let mut item = LVITEMW {
+            state: windows::Win32::UI::Controls::LIST_VIEW_ITEM_STATE_FLAGS(0),
+            stateMask: windows::Win32::UI::Controls::LIST_VIEW_ITEM_STATE_FLAGS(
+                windows::Win32::UI::Controls::LVIS_SELECTED.0,
+            ),
+            ..Default::default()
+        };
+        SendMessageW(
+            lv,
+            windows::Win32::UI::Controls::LVM_SETITEMSTATE,
+            Some(WPARAM(usize::MAX)),
+            Some(LPARAM(&mut item as *mut LVITEMW as isize)),
+        );
+    }
+}
+
 pub fn focus_row(lv: HWND, row: i32) {
+    clear_selection(lv);
     unsafe {
         let mut item = LVITEMW {
             state: windows::Win32::UI::Controls::LIST_VIEW_ITEM_STATE_FLAGS(
