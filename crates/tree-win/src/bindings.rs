@@ -10,9 +10,17 @@ use std::sync::mpsc::{channel, Receiver};
 
 pub const PORT: u16 = 17817;
 
+/// One link from the browser, with the headers that make it work: a download
+/// behind a session cookie fails without them.
+#[derive(Clone, Debug)]
+pub struct Request {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+}
+
 /// Start the listener. Returns `None` if the port is taken (another Tree, or an
 /// unrelated program) — the app still works, only the extension bridge is off.
-pub fn start(port: u16) -> Option<Receiver<Vec<String>>> {
+pub fn start(port: u16) -> Option<Receiver<Vec<Request>>> {
     let listener = TcpListener::bind(("127.0.0.1", port)).ok()?;
     let (tx, rx) = channel();
     std::thread::Builder::new()
@@ -31,7 +39,7 @@ pub fn start(port: u16) -> Option<Receiver<Vec<String>>> {
     Some(rx)
 }
 
-fn handle(mut stream: TcpStream) -> Option<Vec<String>> {
+fn handle(mut stream: TcpStream) -> Option<Vec<Request>> {
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
     let mut buf = [0u8; 4096];
     let n = stream.read(&mut buf).unwrap_or(0);
@@ -50,12 +58,11 @@ fn handle(mut stream: TcpStream) -> Option<Vec<String>> {
         return None;
     }
 
-    let body = if target.starts_with("/add?url=") {
-        let raw = target.trim_start_matches("/add?url=");
-        let url = percent_decode(raw.split('&').next().unwrap_or(raw));
+    let body = if target.starts_with("/add?") {
+        let (url, headers) = parse_add(target);
         if url.starts_with("http://") || url.starts_with("https://") {
             respond(&mut stream, 200, r#"{"ok":true}"#, true);
-            return Some(vec![url]);
+            return Some(vec![Request { url, headers }]);
         }
         r#"{"ok":false,"error":"not an http(s) url"}"#
     } else if target.starts_with("/ping") {
@@ -88,6 +95,30 @@ fn respond(stream: &mut TcpStream, status: u16, body: &str, cors: bool) {
     let _ = stream.write_all(head.as_bytes());
     let _ = stream.write_all(body.as_bytes());
     let _ = stream.flush();
+}
+
+/// Split `/add?url=…&cookie=…&referer=…&ua=…` into a URL plus request headers.
+fn parse_add(target: &str) -> (String, Vec<(String, String)>) {
+    let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let mut url = String::new();
+    let mut headers = Vec::new();
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        let value = percent_decode(value);
+        if value.is_empty() {
+            continue;
+        }
+        match key {
+            "url" => url = value,
+            "cookie" => headers.push(("Cookie".to_string(), value)),
+            "referer" | "referrer" => headers.push(("Referer".to_string(), value)),
+            "ua" | "user_agent" => headers.push(("User-Agent".to_string(), value)),
+            _ => {}
+        }
+    }
+    (url, headers)
 }
 
 /// Only the escapes a browser actually produces in a URL.
@@ -127,7 +158,26 @@ fn percent_decode(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::percent_decode;
+    use super::{parse_add, percent_decode};
+
+    #[test]
+    fn reads_headers_from_an_add_request() {
+        let (url, headers) = parse_add(
+            "/add?url=https%3A%2F%2Fexample.com%2Fa.zip&cookie=sid%3Dabc%3B%20t%3D1&referer=https%3A%2F%2Fexample.com%2F",
+        );
+        assert_eq!(url, "https://example.com/a.zip");
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers[0].0, "Cookie");
+        assert_eq!(headers[0].1, "sid=abc; t=1");
+        assert_eq!(headers[1].0, "Referer");
+    }
+
+    #[test]
+    fn a_plain_add_has_no_headers() {
+        let (url, headers) = parse_add("/add?url=https%3A%2F%2Fexample.com%2Ff.bin");
+        assert_eq!(url, "https://example.com/f.bin");
+        assert!(headers.is_empty());
+    }
 
     #[test]
     fn decodes_browser_escapes() {

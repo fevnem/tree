@@ -27,7 +27,11 @@ pub const CANCEL: u8 = 2;
 const TICK: Duration = Duration::from_millis(250);
 
 pub enum Cmd {
-    Add(Vec<String>),
+    /// Add links with the headers the source gave us (cookies, referer, UA).
+    Add {
+        urls: Vec<String>,
+        headers: Vec<(String, String)>,
+    },
     RefreshTools,
     Pause(u64),
     Resume(u64),
@@ -101,17 +105,25 @@ pub struct TaskRun {
     pub kind: Kind,
     pub stop: AtomicU8,
     pub bucket: Arc<Bucket>,
+    /// Headers copied from the request that created the task.
+    pub headers: Vec<(String, String)>,
     pub inner: Mutex<Run>,
 }
 
 impl TaskRun {
-    fn new(t: &Task, client: Client, bucket: Arc<Bucket>) -> TaskRun {
+    fn new(
+        t: &Task,
+        client: Client,
+        bucket: Arc<Bucket>,
+        headers: Vec<(String, String)>,
+    ) -> TaskRun {
         TaskRun {
             id: t.id,
             url: t.url.clone(),
             dir: PathBuf::from(&t.dir),
             client,
             kind: t.kind,
+            headers,
             stop: AtomicU8::new(RUN),
             bucket,
             inner: Mutex::new(Run {
@@ -251,6 +263,7 @@ impl Engine {
             settings: settings.clone(),
             active: HashMap::new(),
             speeds: HashMap::new(),
+            headers: HashMap::new(),
             client: crate::http_client(),
             ytdlp: tools.clone(),
             default_dir: default_dir.clone(),
@@ -281,11 +294,26 @@ impl Engine {
     }
 
     pub fn add(&self, url: &str) {
-        let _ = self.tx.send(Cmd::Add(vec![url.to_string()]));
+        let _ = self.tx.send(Cmd::Add {
+            urls: vec![url.to_string()],
+            headers: Vec::new(),
+        });
     }
 
     pub fn add_many(&self, urls: &[String]) {
-        let _ = self.tx.send(Cmd::Add(urls.to_vec()));
+        let _ = self.tx.send(Cmd::Add {
+            urls: urls.to_vec(),
+            headers: Vec::new(),
+        });
+    }
+
+    /// Same as `add_many`, with headers (cookies, referer, user-agent) applied
+    /// to the probe and every segment request.
+    pub fn add_many_with_headers(&self, urls: &[String], headers: Vec<(String, String)>) {
+        let _ = self.tx.send(Cmd::Add {
+            urls: urls.to_vec(),
+            headers,
+        });
     }
 
     pub fn pause(&self, id: u64) {
@@ -357,6 +385,8 @@ struct Runner {
     settings: Arc<Mutex<Settings>>,
     active: HashMap<u64, Arc<TaskRun>>,
     speeds: HashMap<u64, Speedometer>,
+    /// Per-task headers from the link source, kept until the task finishes.
+    headers: HashMap<u64, Vec<(String, String)>>,
     client: Client,
     ytdlp: Arc<Mutex<Option<PathBuf>>>,
     default_dir: PathBuf,
@@ -400,7 +430,7 @@ impl Runner {
 
     fn handle(&mut self, cmd: Cmd, tx: &UnboundedSender<Cmd>) {
         match cmd {
-            Cmd::Add(urls) => self.add(urls),
+            Cmd::Add { urls, headers } => self.add(urls, headers),
             Cmd::Pause(id) => {
                 match self.active.get(&id) {
                     Some(run) => run.stop.store(PAUSE, Ordering::Relaxed),
@@ -511,7 +541,7 @@ impl Runner {
         }
     }
 
-    fn add(&mut self, urls: Vec<String>) {
+    fn add(&mut self, urls: Vec<String>, headers: Vec<(String, String)>) {
         let settings = lock(&self.settings).clone();
         let dir = if settings.dir.trim().is_empty() {
             self.default_dir.to_string_lossy().into_owned()
@@ -532,6 +562,9 @@ impl Runner {
             });
             if duplicate {
                 continue;
+            }
+            if !headers.is_empty() {
+                self.headers.insert(next, headers.clone());
             }
             v.push(Task {
                 id: next,
@@ -582,7 +615,8 @@ impl Runner {
         }
         for task in starting {
             let bucket = Arc::new(Bucket::new(settings.speed_limit()));
-            let run = Arc::new(TaskRun::new(&task, self.client.clone(), bucket));
+            let headers = self.headers.get(&task.id).cloned().unwrap_or_default();
+            let run = Arc::new(TaskRun::new(&task, self.client.clone(), bucket, headers));
             self.active.insert(task.id, run.clone());
             let tasks = self.tasks.clone();
             let tx = tx.clone();
@@ -663,7 +697,7 @@ async fn run_task(
     let needs_probe = lock(&run.inner).bounds.is_empty();
 
     if needs_probe {
-        let probed = match probe::probe(&run.client, &run.url).await {
+        let probed = match probe::probe(&run.client, &run.url, &run.headers).await {
             Ok(p) => p,
             Err(e) => return Outcome::Failed(e.user_message()),
         };
@@ -820,7 +854,12 @@ mod tests {
 
     #[test]
     fn resumed_offsets_come_from_the_model() {
-        let run = TaskRun::new(&sample_task(), crate::http_client(), Arc::new(Bucket::new(0)));
+        let run = TaskRun::new(
+            &sample_task(),
+            crate::http_client(),
+            Arc::new(Bucket::new(0)),
+            Vec::new(),
+        );
         assert_eq!(run.offset(0), 40);
         assert_eq!(run.offset(1), 50);
         assert_eq!(run.done(), 40);

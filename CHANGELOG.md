@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.1 — 2026-11-03
+
+* **Authenticated downloads.** The browser bridge now accepts `cookie`, `referer`
+  and `ua` parameters and applies them to the probe and every segment request, so
+  links behind a session work. Verified against a server that returns 403 without
+  the cookie: anonymous request fails honestly, the same URL with the cookie
+  downloads to 100 %.
+* Requests from the extension are applied per link, so a page with several hosts
+  keeps each host's own cookies.
+
 ## 0.5.0 — 2026-11-03
 
 Researched 120 download-manager repositories (616 swept) and closed the gaps the

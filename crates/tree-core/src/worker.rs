@@ -114,9 +114,11 @@ async fn fetch(run: &Arc<TaskRun>, seg: usize, file: &std::fs::File) -> Result<S
     } else {
         format!("bytes={}-{}", off, end)
     };
-    let resp = run
-        .client
-        .get(&run.url)
+    let mut request = run.client.get(&run.url);
+    for (name, value) in &run.headers {
+        request = request.header(name.as_str(), value.as_str());
+    }
+    let resp = request
         .header(reqwest::header::RANGE, range)
         .timeout(CHUNK_TIMEOUT.max(Duration::from_secs(1)))
         .send()

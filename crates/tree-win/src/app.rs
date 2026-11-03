@@ -97,7 +97,7 @@ pub struct App {
     pub paused_by_quiet: Vec<u64>,
     pub quiet_dlg: HWND,
     /// Loopback bridge for the browser extension, drained on the UI timer.
-    pub bridge: Option<std::sync::mpsc::Receiver<Vec<String>>>,
+    pub bridge: Option<std::sync::mpsc::Receiver<Vec<bindings::Request>>>,
 }
 
 fn scale(dpi: u32, v: i32) -> i32 {
@@ -657,7 +657,7 @@ impl App {
 
     /// Links handed over by the browser extension.
     fn drain_bridge(&mut self) {
-        let incoming: Vec<String> = match &self.bridge {
+        let incoming: Vec<crate::bindings::Request> = match &self.bridge {
             Some(rx) => {
                 let mut all = Vec::new();
                 while let Ok(mut batch) = rx.try_recv() {
@@ -667,8 +667,13 @@ impl App {
             }
             None => return,
         };
-        if !incoming.is_empty() {
-            self.add_many(&incoming);
+        if incoming.is_empty() {
+            return;
+        }
+        self.follow = true;
+        for request in incoming {
+            self.engine
+                .add_many_with_headers(&[request.url], request.headers);
         }
     }
 

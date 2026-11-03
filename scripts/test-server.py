@@ -20,6 +20,8 @@ RATE = (int(sys.argv[3]) if len(sys.argv) > 3 else 0) * 1024 * 1024
 # which makes one connection lag so adaptive stealing can be observed.
 import os
 SLOW_ZONE = int(os.environ.get("SLOW_ZONE_MB", "0")) * 1024 * 1024
+# When set, requests without this cookie get 403 — proves header passthrough.
+REQUIRE_COOKIE = os.environ.get("REQUIRE_COOKIE", "")
 BLOB = bytes((i * 37 + 11) & 0xFF for i in range(1 << 20)) * (SIZE >> 20)
 
 
@@ -52,6 +54,12 @@ class Handler(BaseHTTPRequestHandler):
         self._headers(200, SIZE)
 
     def do_GET(self):
+        if REQUIRE_COOKIE:
+            jar = self.headers.get("Cookie", "")
+            name, _, value = REQUIRE_COOKIE.partition("=")
+            if f"{name}={value}" not in jar:
+                self.send_error(403, "cookie required")
+                return
         start = 0
         rng = self.headers.get("Range")
         if rng:

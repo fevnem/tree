@@ -43,9 +43,16 @@ fn name_from(resp: &Response) -> Option<String> {
     Some(name)
 }
 
-pub async fn probe(client: &Client, url: &str) -> Result<Probe, DlError> {
-    let resp = client
-        .get(url)
+pub async fn probe(
+    client: &Client,
+    url: &str,
+    headers: &[(String, String)],
+) -> Result<Probe, DlError> {
+    let mut request = client.get(url);
+    for (name, value) in headers {
+        request = request.header(name.as_str(), value.as_str());
+    }
+    let resp = request
         .header(reqwest::header::RANGE, "bytes=0-0")
         // A server that accepts the socket and then says nothing must not hang
         // the task forever: the probe is the only request with no progress signal.
